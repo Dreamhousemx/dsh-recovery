@@ -1,0 +1,19 @@
+# 生成的 Electron 运行时（从已安装的 DSH 硬链接而来，数百 MB）
+.runtime/
+
+# 安全模式临时数据目录与导出的诊断包
+.safemode/
+diagnostics/
+
+# 按机器生成的配置与「按目标归档」布局的状态文件
+dsh-recovery.config.json
+state-*.json
+
+# scoped 布局为别的归档建的备份目录（默认归档的 backup/ 要提交）
+restart-button/backup/*/
+
+# 编辑器 / 系统垃圾
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

@@ -1,0 +1,24 @@
+{
+  "toolVersion": "1.0.0",
+  "installedAt": "2026-10-06T07:57:50.224Z",
+  "archive": "D:\\Dev Tools\\DeepSeek Harness\\resources\\app.asar",
+  "entries": [
+    {
+      "entryPath": "lib/main.js",
+      "action": "write",
+      "hash": "207867aac883250699e78c8497e37e17f7b45affe487e1da52bf3cc903bb886a",
+      "previousHash": "b86016cc2da22078ad9344f35edcca7980795b5005eec8dcf35cde552a4581a8",
+      "hashHits": 2,
+      "size": 490173
+    },
+    {
+      "entryPath": "lib/preload-app.cjs",
+      "action": "write",
+      "hash": "e42784d0f4c072af03f78b2aba02ade4c6ed81609ae30e8320b67b3647116992",
+      "previousHash": "f323eb67f7ace407d3b1d858f264f7846e436d9ba3e80c02b0454a6da0aed968",
+      "hashHits": 2,
+      "size": 41075
+    }
+  ],
+  "backupDir": "backup"
+}

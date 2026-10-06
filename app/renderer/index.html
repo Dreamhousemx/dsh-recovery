@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'"
+    />
+    <title>DSH 恢复器</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="titlebar">
+      <span class="titlebar__mark">DSH</span>
+      <div class="titlebar__text">
+        <h1>DSH 恢复器</h1>
+        <p id="title-hint">独立于 DSH 运行时运行，可在 Profile 无法启动时修复它</p>
+      </div>
+      <button class="btn btn--ghost" id="refresh-button" type="button">刷新</button>
+    </header>
+
+    <section class="card reason" id="reason" aria-live="polite"></section>
+
+    <nav class="tabs" id="tabs" role="tablist"></nav>
+
+    <main class="panels" id="panels"></main>
+
+    <footer class="footer">
+      <div class="footer__status" id="status" aria-live="polite"></div>
+      <div class="footer__actions" id="footer-actions"></div>
+    </footer>
+
+    <div class="toast-host" id="toasts" aria-live="polite"></div>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

@@ -1,0 +1,4 @@
+# 保持字节级保真：不做行尾规范化，.cmd 在检出时固定为 CRLF
+* -text
+*.cmd text eol=crlf
+*.png binary

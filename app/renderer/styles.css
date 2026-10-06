@@ -1,0 +1,611 @@
+/* DSH Recovery console — visual language mirrors the DSH Desktop recovery
+   window: light neutral canvas, white rounded cards, a pill tab bar and
+   dark primary actions. */
+
+:root {
+  --bg: #f4f4f6;
+  --card: #ffffff;
+  --border: #e5e5ea;
+  --border-strong: #d6d6dd;
+  --text: #17171c;
+  --muted: #6c6c78;
+  --faint: #9a9aa5;
+  --chip: #f1f1f4;
+  --primary: #1b1b20;
+  --primary-hover: #33333c;
+  --danger: #d92d20;
+  --danger-soft: #fef3f2;
+  --ok: #067647;
+  --ok-soft: #ecfdf3;
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 1px 2px rgba(16, 16, 20, 0.04);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 18px 22px 16px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* --- title bar ---------------------------------------------------------- */
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.titlebar__mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.titlebar__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.titlebar__text h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.titlebar__text p {
+  margin: 1px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- cards -------------------------------------------------------------- */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px 18px;
+}
+
+.card + .card {
+  margin-top: 12px;
+}
+
+.card__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.card__head-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.card__tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.card__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1.4px solid var(--text);
+  font-size: 12px;
+  margin-top: 1px;
+}
+
+.card__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 640;
+}
+
+.card__desc {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.card__body {
+  margin-top: 12px;
+}
+
+.card--danger {
+  border-color: #fecdc9;
+  background: linear-gradient(0deg, var(--danger-soft), var(--danger-soft));
+}
+
+.card--danger .card__title {
+  color: var(--danger);
+}
+
+.card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.card__actions--end {
+  justify-content: flex-end;
+}
+
+/* --- reason banner ------------------------------------------------------ */
+
+.reason {
+  padding: 14px 18px;
+}
+
+.reason__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.reason__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 640;
+}
+
+.reason__state {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.reason__note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.chip--mono {
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 11px;
+}
+
+.chip--ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.chip--warn {
+  background: #fff7e6;
+  color: #b25e09;
+}
+
+.chip--danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* --- tabs --------------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 5px;
+  background: #ebebef;
+  border-radius: 12px;
+  overflow-x: auto;
+}
+
+.tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 14px;
+  border-radius: 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab[aria-selected="true"] {
+  background: var(--card);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(16, 16, 20, 0.08);
+}
+
+.tab__badge {
+  min-width: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--muted);
+  font-size: 10.5px;
+  text-align: center;
+}
+
+.tab[aria-selected="true"] .tab__badge {
+  background: var(--primary);
+  color: #fff;
+}
+
+/* --- panels ------------------------------------------------------------- */
+
+.panels {
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+
+.panel {
+  display: none;
+}
+
+.panel[data-active="true"] {
+  display: block;
+}
+
+.hint {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* --- lists -------------------------------------------------------------- */
+
+.list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+}
+
+.row:first-child {
+  border-top: 0;
+}
+
+.row__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.row__name {
+  font-weight: 600;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.row__name--mono {
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+}
+
+.row__sub {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
+.row__side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.row--muted .row__name {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.metric {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  background: #fbfbfc;
+}
+
+.metric__label {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.metric__value {
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 620;
+  word-break: break-all;
+}
+
+.metric__value--mono {
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.empty {
+  padding: 22px 16px;
+  text-align: center;
+  color: var(--faint);
+  font-size: 12.5px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+/* Command output of the last patch run (restart button panel). */
+.log {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 240px;
+  overflow: auto;
+  background: var(--chip);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* --- buttons ------------------------------------------------------------ */
+
+.btn {
+  appearance: none;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  background: var(--card);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  background: #f7f7f9;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 560;
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+
+.btn--danger {
+  background: #fdecea;
+  border-color: #f6c9c4;
+  color: var(--danger);
+}
+
+.btn--danger:hover:not(:disabled) {
+  background: #fbdcd8;
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: #eaeaee;
+  color: var(--text);
+}
+
+.btn--small {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.select {
+  appearance: none;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 30px 7px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  background: var(--card)
+    url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath fill='%236c6c78' d='M0 0h10L5 6z'/%3E%3C/svg%3E")
+    no-repeat right 11px center;
+  color: var(--text);
+  max-width: 100%;
+}
+
+body[data-busy="1"] .btn,
+body[data-busy="1"] .select {
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+/* --- footer ------------------------------------------------------------- */
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.footer__status {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.footer__status strong {
+  font-weight: 600;
+}
+
+.footer__actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex: none;
+}
+
+.dot--on {
+  background: #12b76a;
+}
+
+.dot--busy {
+  background: #f79009;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 0, 0, 0.12);
+  border-top-color: var(--muted);
+  animation: spin 0.7s linear infinite;
+  flex: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- toasts ------------------------------------------------------------- */
+
+.toast-host {
+  position: fixed;
+  right: 20px;
+  bottom: 74px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.toast {
+  max-width: 520px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #1b1b20;
+  color: #fff;
+  font-size: 12.5px;
+  box-shadow: 0 8px 24px rgba(16, 16, 20, 0.24);
+  word-break: break-word;
+}
+
+.toast--error {
+  background: #7a271a;
+}
+
+.toast--ok {
+  background: #054f31;
+}

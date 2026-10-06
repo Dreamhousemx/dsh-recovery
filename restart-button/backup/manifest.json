@@ -1,0 +1,18 @@
+{
+  "entries": {
+    "lib/main.js": {
+      "backupFile": "backup\\lib__main.js.orig",
+      "size": 490173,
+      "sha256": "b86016cc2da22078ad9344f35edcca7980795b5005eec8dcf35cde552a4581a8",
+      "headerHash": "b86016cc2da22078ad9344f35edcca7980795b5005eec8dcf35cde552a4581a8",
+      "backedUpAt": "2026-10-06T07:57:50.008Z"
+    },
+    "lib/preload-app.cjs": {
+      "backupFile": "backup\\lib__preload-app.cjs.orig",
+      "size": 41075,
+      "sha256": "f323eb67f7ace407d3b1d858f264f7846e436d9ba3e80c02b0454a6da0aed968",
+      "headerHash": "f323eb67f7ace407d3b1d858f264f7846e436d9ba3e80c02b0454a6da0aed968",
+      "backedUpAt": "2026-10-06T07:57:50.047Z"
+    }
+  }
+}
