@@ -1,7 +1,7 @@
 # DSH 恢复器（dsh-recovery）
 
 一个**独立的桌面恢复控制台**，让 DeepSeek Harness 在无法正常启动时仍然可以被修复。
-界面与能力对标 `DSH Desktop 2.0.17` 的恢复模式（七个标签页：快速恢复 / 插件管理 / 回滚 /
+界面与能力对标 `DSH Desktop` 的恢复模式（七个标签页：快速恢复 / 插件管理 / 回滚 /
 重启按钮 / 切换 Profile / 重置与数据管理 / 诊断）。
 
 ![恢复器界面](docs/console-overview.png)
