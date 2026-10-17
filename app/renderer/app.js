@@ -146,6 +146,15 @@ function hint(text) {
   return el("p", { class: "hint", text });
 }
 
+// A sticky strip pinned to the top of a panel: one-click actions on a long list
+// must stay reachable without scrolling past every row.
+function panelBar(label, side) {
+  return el("div", { class: "pbar" }, [
+    el("span", { class: "pbar__label", text: label }),
+    el("div", { class: "pbar__side" }, side),
+  ]);
+}
+
 function joinSub(...parts) {
   const kept = parts.filter((part) => part !== undefined && part !== null && part !== "");
   return kept.length === 0 ? undefined : kept.join(" · ");
@@ -207,6 +216,35 @@ const ACTIONS = {
     const enabled = plugin?.enabled === true;
     return run(`${enabled ? "禁用" : "启用"} ${arg}`, "setBundleEnabled", arg, enabled !== true);
   },
+  "enable-all-bundles": async () => {
+    const detail = state.selectedProfileDetail;
+    const plugins = detail?.plugins ?? [];
+    const patchEntries = detail?.patchEntries ?? [];
+    const off = plugins.filter((plugin) => plugin.bundle === true && plugin.enabled !== true);
+    const disabledEntries = patchEntries.filter((entry) => entry.disabled === true);
+    if (off.length === 0 && disabledEntries.length === 0) {
+      toast("当前 Profile 的插件已全部启用", "ok");
+      return;
+    }
+    if (
+      !confirm(
+        `一键启用全部插件：\n\n` +
+          (off.length === 0
+            ? `· 插件层已经全部启用，本次只会处理补丁层\n`
+            : `· 将把 ${off.length} 个插件加入 Profile「${detail?.name ?? state.selectedProfile}」的插件层\n` +
+              `  ${off.map((plugin) => plugin.name).join("\n  ")}\n` +
+              `· 不在依赖中的包与非插件包会被跳过，执行后逐条说明原因\n`) +
+          (disabledEntries.length === 0
+            ? ""
+            : `· 另把 cordis.patch.yml 里 ${disabledEntries.length} 条 disabled: true 改为 false（只动 disabled 这一行，其它内容与 config.enabled 保持不变）：\n` +
+              `  ${disabledEntries.map((entry) => entry.id ?? entry.name ?? "?").join("\n  ")}\n`) +
+          `· 启用前会自动创建检查点，可随时回滚\n` +
+          `\n重启应用后生效。确定继续吗？`,
+      )
+    )
+      return;
+    await run("启用全部插件", "enableAllBundles");
+  },
   "uninstall-bundle": async (arg) => {
     if (!confirm(`卸载插件：${arg}\n\n包会移入 Profile 内的隔离区，可以随时还原。确定继续吗？`)) return;
     await run(`卸载 ${arg}`, "uninstallBundle", arg);
@@ -236,6 +274,24 @@ const ACTIONS = {
   "delete-checkpoint": async (arg) => {
     if (!confirm(`删除检查点 ${arg}？此操作不可撤销。`)) return;
     await run(`删除检查点 ${arg}`, "deleteCheckpoint", arg);
+  },
+  "delete-all-checkpoints": async () => {
+    const total = state.checkpoints.length;
+    if (total === 0) {
+      toast("当前没有检查点", "ok");
+      return;
+    }
+    const bytes = state.checkpoints.reduce((sum, entry) => sum + (typeof entry.bytes === "number" ? entry.bytes : 0), 0);
+    if (
+      !confirm(
+        `一键删除全部检查点：\n\n` +
+          `· 将永久删除 ${total} 个槽位（约 ${formatBytes(bytes)}）\n` +
+          `· 包括自动检查点与恢复前的快照，全部不可撤销\n` +
+          `· 不影响 Profile 当前内容，只删除历史快照\n\n确定继续吗？`,
+      )
+    )
+      return;
+    await run("删除全部检查点", "deleteAllCheckpoints");
   },
   "export-diagnostics": () => run("正在生成诊断包", "exportDiagnostics"),
   "restart-button-apply": async () => {
@@ -448,8 +504,29 @@ function renderPlugins() {
   const running = state.running.isRunning;
   const bundles = detail.plugins.filter((plugin) => plugin.bundle === true);
   const others = detail.plugins.filter((plugin) => plugin.bundle !== true);
+  const allEnabled = bundles.every((plugin) => plugin.enabled === true);
+  const offCount = bundles.filter((plugin) => plugin.enabled !== true).length;
+  const patchDisabledCount = (detail.patchEntries ?? []).filter((entry) => entry.disabled === true).length;
 
   const nodes = [
+    panelBar(
+      `已启用 ${bundles.filter((plugin) => plugin.enabled === true).length} / ${bundles.length} 个插件` +
+        (patchDisabledCount > 0 ? ` · 补丁层禁用 ${patchDisabledCount} 条` : ""),
+      [
+        button("一键启用全部插件", "enable-all-bundles", undefined, {
+          className: "btn--primary",
+          disabled: running || (allEnabled && patchDisabledCount === 0),
+          title: running
+            ? "目标应用正在运行，请先停止或重启应用"
+            : allEnabled && patchDisabledCount > 0
+              ? `插件层已全启用，但 cordis.patch.yml 里还有 ${patchDisabledCount} 条 disabled: true`
+              : allEnabled
+                ? "所有插件都已启用"
+                : `把另外 ${offCount} 个可加载的插件一次性加入插件层`,
+        }),
+        button("刷新", "refresh", undefined, { className: "btn--ghost" }),
+      ],
+    ),
     hint(
       "查看当前 Profile 中安装的插件。可以禁用插件（保留安装，启动时不加载），也可以彻底卸载（移入隔离区，可随时还原）。" +
         (running ? " 目标应用正在运行，改动类操作已暂时禁用。" : ""),
@@ -462,8 +539,6 @@ function renderPlugins() {
         bundles.length === 0
           ? empty("这个 Profile 还没有启用任何插件。")
           : list(bundles.map((plugin) => pluginRow(plugin, running))),
-      actions: [button("刷新", "refresh", undefined, { className: "btn--ghost" })],
-      actionsEnd: true,
     }),
   ];
 
@@ -512,7 +587,7 @@ function renderPlugins() {
   nodes.push(
     card({
       title: "Profile 补丁",
-      desc: `cordis.patch.yml 由 DSH 与用户共同维护，恢复器只读取它、从不改写（重置插件集时会另存为 .bak）。共 ${detail.patchEntries.length} 条，其中 ${detail.patchDisabledCount} 条为禁用。`,
+      desc: `cordis.patch.yml 由 DSH 与用户共同维护。恢复器只在「一键启用全部插件」时把 disabled: true 改成 false，其余内容一律不动（重置插件集时会另存为 .bak）。共 ${detail.patchEntries.length} 条，其中 ${detail.patchDisabledCount} 条为禁用。`,
       body:
         detail.patchEntries.length === 0
           ? empty("补丁文件中没有条目。")
@@ -583,18 +658,31 @@ function renderCheckpoints() {
     }),
   );
 
+  const totalBytes = state.checkpoints.reduce((sum, entry) => sum + (typeof entry.bytes === "number" ? entry.bytes : 0), 0);
   return [
+    panelBar(
+      state.checkpoints.length === 0 ? "暂无检查点" : `共 ${state.checkpoints.length} 个检查点 · ${formatBytes(totalBytes)}`,
+      [
+        button("立即创建检查点", "create-checkpoint", undefined, { className: "btn--primary", disabled: running }),
+        button("一键删除全部", "delete-all-checkpoints", undefined, {
+          className: "btn--danger",
+          disabled: running || state.checkpoints.length === 0,
+          title: running
+            ? "目标应用正在运行，请先停止或重启应用"
+            : state.checkpoints.length === 0
+              ? "当前没有检查点"
+              : `永久删除全部 ${state.checkpoints.length} 个检查点`,
+        }),
+        button("在文件夹中显示", "open-path", state.checkpointRoot),
+        button("生成诊断包", "export-diagnostics", undefined, { className: "btn--ghost" }),
+      ],
+    ),
     hint("检查点只保存 Profile 的配置文件（package.json、cordis.patch.yml、cordis.yml、锁文件），不含 node_modules，因此创建与恢复都很快。恢复前会自动为当前状态再建一个检查点。"),
     card({
       title: "回滚",
       desc: `共 ${state.checkpoints.length} 个检查点，保存在 ${state.checkpointRoot}`,
       tags: running ? [chip("应用运行中", "warn")] : undefined,
       body: rows.length === 0 ? empty("还没有检查点。执行插件改动时恢复器会自动创建，也可以现在手动创建一个。") : list(rows),
-      actions: [
-        button("立即创建检查点", "create-checkpoint", undefined, { className: "btn--primary", disabled: running }),
-        button("在文件夹中显示", "open-path", state.checkpointRoot),
-        button("生成诊断包", "export-diagnostics", undefined, { className: "btn--ghost" }),
-      ],
     }),
   ];
 }

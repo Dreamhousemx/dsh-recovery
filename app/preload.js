@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld("recovery", {
 
   // --- plugin management -------------------------------------------------
   setBundleEnabled: (name, enabled) => invoke("recovery:set-bundle-enabled", name, enabled),
+  enableAllBundles: () => invoke("recovery:enable-all-bundles"),
   uninstallBundle: (name) => invoke("recovery:uninstall-bundle", name),
   restoreRemoved: (entryName) => invoke("recovery:restore-removed", entryName),
   discardRemoved: (entryName) => invoke("recovery:discard-removed", entryName),
@@ -35,6 +36,7 @@ contextBridge.exposeInMainWorld("recovery", {
   createCheckpoint: (note) => invoke("recovery:create-checkpoint", note),
   restoreCheckpoint: (id) => invoke("recovery:restore-checkpoint", id),
   deleteCheckpoint: (id) => invoke("recovery:delete-checkpoint", id),
+  deleteAllCheckpoints: () => invoke("recovery:delete-all-checkpoints"),
 
   // --- diagnostics -------------------------------------------------------
   diagnostics: () => invoke("recovery:diagnostics"),

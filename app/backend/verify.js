@@ -11,6 +11,7 @@ const { createHash } = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
+const checkpoints = require("./checkpoints");
 const launcher = require("./launcher");
 const paths = require("./paths");
 const { withoutAsar } = require("./asar");
@@ -168,6 +169,7 @@ function buildFixture(root) {
 
 async function verifyPluginManagement(controller, fixture, result) {
   const manifestPath = path.join(fixture.profileDir, "package.json");
+  const patchPath = path.join(fixture.profileDir, "cordis.patch.yml");
   const bundlesOf = (state) => state.selectedProfileDetail?.bundles ?? [];
 
   const disabled = await controller.dispatch("recovery:set-bundle-enabled", [FIXTURE_BUNDLE, false]);
@@ -202,6 +204,41 @@ async function verifyPluginManagement(controller, fixture, result) {
     "插件管理: 拒绝启用非组合包",
     nonBundle.ok === false && /不是插件组合包/u.test(errorText(nonBundle) ?? ""),
     errorText(nonBundle),
+  );
+
+  const allOff = await controller.dispatch("recovery:set-bundle-enabled", [FIXTURE_BUNDLE, false]);
+  // Plant a patch-layer disable: a bundle listed in dsh.profile.bundles would
+  // still not load while its id is disabled here, so "enable all" must fix it.
+  fs.writeFileSync(
+    patchPath,
+    `- id: fake-row\n  name: ${FIXTURE_BUNDLE}\n- id: fake-usage\n  disabled: true\n  config:\n    enabled: false\n`,
+  );
+  const enableAll = await controller.dispatch("recovery:enable-all-bundles", []);
+  const skippedNames = (enableAll.result?.bundles?.skipped ?? []).map((item) => item.name);
+  const patchAfterAll = fs.readFileSync(patchPath, "utf8");
+  result.ok(
+    "插件管理: 一键启用全部插件",
+    allOff.ok === true &&
+      enableAll.ok === true &&
+      bundlesOf(enableAll.state).includes(FIXTURE_BUNDLE) &&
+      skippedNames.includes(FIXTURE_DEP) &&
+      (readJson(manifestPath).value?.dsh?.profile?.bundles ?? []).includes(FIXTURE_BUNDLE) &&
+      /- id: fake-row\n  name: fake-bundle\n/u.test(patchAfterAll),
+    errorText(enableAll) ?? JSON.stringify(skippedNames),
+  );
+  result.ok(
+    "插件管理: 一键启用同时解除补丁层禁用",
+    /- id: fake-usage\n  disabled: false\n  config:\n    enabled: false\n$/u.test(patchAfterAll) &&
+      (enableAll.result?.bundles?.patchReenabled ?? []).includes("fake-usage"),
+    patchAfterAll,
+  );
+  const enableAllAgain = await controller.dispatch("recovery:enable-all-bundles", []);
+  result.ok(
+    "插件管理: 一键启用重复执行无副作用",
+    enableAllAgain.ok === true &&
+      (enableAllAgain.result?.bundles?.changed ?? true) === false &&
+      fs.readFileSync(patchPath, "utf8") === patchAfterAll,
+    errorText(enableAllAgain),
   );
 
   const uninstalled = await controller.dispatch("recovery:uninstall-bundle", [FIXTURE_BUNDLE]);
@@ -281,6 +318,34 @@ async function verifyCheckpoints(controller, fixture, result) {
     "回滚: 删除检查点",
     deleted.ok === true && (deleted.state?.checkpoints ?? []).every((entry) => entry.id !== id),
     errorText(deleted),
+  );
+
+  // The pre-restore snapshot plus the auto checkpoints above leave several
+  // slots behind, so the sweep has something real to clear.
+  const beforeSweep = deleted.state?.checkpoints ?? [];
+  const checkpointRoot = controller.state.checkpointRoot;
+  const sweep = await controller.dispatch("recovery:delete-all-checkpoints", []);
+  const leftOver = Array.isArray(sweep.result?.deleted?.failed) ? sweep.result.deleted.failed.length : -1;
+  result.ok(
+    "回滚: 一键删除全部检查点",
+    sweep.ok === true &&
+      beforeSweep.length >= 2 &&
+      leftOver === 0 &&
+      (sweep.state?.checkpoints ?? []).length === 0 &&
+      checkpoints.listCheckpoints(controller.state.home.path).length === 0,
+    errorText(sweep) ?? `${beforeSweep.length} → ${(sweep.state?.checkpoints ?? []).length}`,
+  );
+
+  const emptySweep = await controller.dispatch("recovery:delete-all-checkpoints", []);
+  result.ok(
+    "回滚: 一键删除空列表不报错",
+    emptySweep.ok === true && emptySweep.result?.deleted?.removed?.length === 0,
+    errorText(emptySweep) ?? JSON.stringify(emptySweep.result?.message),
+  );
+  result.ok(
+    "回滚: 删除后检查点目录仍可用",
+    fs.existsSync(checkpointRoot) && checkpoints.listCheckpoints(controller.state.home.path).length === 0,
+    checkpointRoot,
   );
 }
 

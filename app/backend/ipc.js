@@ -251,6 +251,9 @@ class RecoveryController {
       case "recovery:set-bundle-enabled":
         return this.setBundleEnabled(String(args[0] ?? ""), args[1] === true);
 
+      case "recovery:enable-all-bundles":
+        return this.enableAllBundles();
+
       case "recovery:uninstall-bundle":
         return this.uninstallBundle(String(args[0] ?? ""));
 
@@ -283,6 +286,9 @@ class RecoveryController {
 
       case "recovery:delete-checkpoint":
         return this.deleteCheckpoint(String(args[0] ?? ""));
+
+      case "recovery:delete-all-checkpoints":
+        return this.deleteAllCheckpoints();
 
       case "recovery:diagnostics":
         return this.diagnosticsSummary();
@@ -359,6 +365,31 @@ class RecoveryController {
       return {
         message: `${enabled ? "已启用" : "已禁用"} ${name}`,
         bundleChange: { name, enabled, before: outcome.before, after: outcome.after },
+        checkpoint: checkpoint.id,
+      };
+    });
+  }
+
+  // Enables every plugin layer this Profile is allowed to load. Skips are
+  // reported, never silent: the message says exactly how many were turned on
+  // and why the rest stayed off.
+  async enableAllBundles() {
+    return this.perform("启用全部插件", async () => {
+      this.requireIdle();
+      const checkpoint = await this.autoCheckpoint("启用全部插件之前");
+      const outcome = profile.enableAllBundles(this.profileDir());
+      const patchText = outcome.patchReenabled.length === 0 ? "" : `，并把 cordis.patch.yml 里 ${outcome.patchReenabled.length} 条 disabled: true 改为 false（${outcome.patchReenabled.join("、")}）`;
+      if (!outcome.changed) {
+        return {
+          message: outcome.before.length === 0 ? "该 Profile 没有可启用的插件" : `没有需要启用的插件，当前已启用 ${outcome.before.length} 个`,
+          bundles: outcome,
+          checkpoint: checkpoint.id,
+        };
+      }
+      const skippedText = outcome.skipped.length === 0 ? "" : `，跳过 ${outcome.skipped.length} 个（${outcome.skipped.map((item) => `${item.name}: ${item.reason}`).join("；")}）`;
+      return {
+        message: `已启用 ${outcome.enabled.length} 个插件${patchText}${skippedText}，重启应用后生效`,
+        bundles: outcome,
         checkpoint: checkpoint.id,
       };
     });
@@ -461,6 +492,24 @@ class RecoveryController {
       const outcome = checkpoints.deleteCheckpoint(this.state.home.path, id);
       return { message: `已删除检查点 ${id}`, deleted: outcome };
     });
+  }
+
+  // Clears every checkpoint slot in one pass. Locked slots are reported instead
+  // of failing the whole sweep, so the UI can tell the user what survived.
+  async deleteAllCheckpoints() {
+    return this.perform("删除全部检查点", async () => {
+      this.requireIdle();
+      const outcome = checkpoints.deleteAllCheckpoints(this.state.home.path);
+      if (outcome.removed.length === 0 && outcome.failed.length === 0) {
+        return { message: "没有可删除的检查点", deleted: outcome };
+      }
+      const sizeText = outcome.removed.length === 0 ? "" : `，释放 ${formatBytes(outcome.bytes)}`;
+      const failText = outcome.failed.length === 0 ? "" : `，${outcome.failed.length} 个删除失败（${outcome.failed.map((item) => `${item.id}: ${item.error}`).join("；")}）`;
+      return {
+        message: `已删除 ${outcome.removed.length} 个检查点${sizeText}${failText}`,
+        deleted: outcome,
+      };
+    }, { sizes: true });
   }
 
   diagnosticsSummary() {

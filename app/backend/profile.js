@@ -129,7 +129,10 @@ function listPlugins(profileDir, manifest) {
   return rows;
 }
 
-/** Minimal, read-only view of the user's patch layer. The file is never rewritten here. */
+/**
+ * Minimal, read-only view of the user's patch layer. This reader never writes;
+ * the only writer of cordis.patch.yml is enablePatchEntries() below.
+ */
 function readPatchEntries(profileDir) {
   const patchPath = path.join(profileDir, "cordis.patch.yml");
   if (!isFile(patchPath)) return { path: patchPath, exists: false, entries: [] };
@@ -369,6 +372,93 @@ function sanitizeProfile(profileDir, bundles = defaultBundles()) {
   return { movedPatch, bundlesBefore: [], bundlesAfter: [...bundles], manifestExisted };
 }
 
+/**
+ * Flip every `disabled: true` loader entry in the profile patch layer to false.
+ *
+ * A bundle can be listed in dsh.profile.bundles and still not load when the
+ * patch layer disables its id, so "enable every plugin" has to cover this file
+ * too. Only the `disabled:` scalar is touched: `config.enabled` and every other
+ * line stay byte-identical, and the original line endings are preserved because
+ * the rewrite splices per-line text instead of re-serialising the YAML.
+ */
+function enablePatchEntries(profileDir) {
+  const patchPath = path.join(profileDir, "cordis.patch.yml");
+  if (!isFile(patchPath)) return { path: patchPath, exists: false, changed: 0, ids: [] };
+  let text;
+  try {
+    text = fs.readFileSync(patchPath, "utf8");
+  } catch (error) {
+    throw new Error(`无法读取 ${patchPath}: ${String(error)}`);
+  }
+  const ids = [];
+  let currentId;
+  const lines = text.split(/(?<=\n)/u);
+  const next = lines.map((line) => {
+    const idMatch = /^\s*-\s+id:\s*(\S+)\s*$/u.exec(line.replace(/\r?\n$/u, ""));
+    if (idMatch !== null) {
+      currentId = idMatch[1];
+      return line;
+    }
+    const disabledMatch = /^(\s*disabled:\s*)("true"|'true'|true)(\s*(?:#.*)?(?:\r?\n)?)$/u.exec(line);
+    if (disabledMatch === null) return line;
+    ids.push(currentId ?? "(未命名条目)");
+    return `${disabledMatch[1]}false${disabledMatch[3]}`;
+  });
+  if (ids.length === 0) return { path: patchPath, exists: true, changed: 0, ids };
+  const output = next.join("");
+  if (output !== text) fs.writeFileSync(patchPath, output, "utf8");
+  return { path: patchPath, exists: true, changed: ids.length, ids };
+}
+
+/**
+ * Enable every plugin bundle layer this profile is allowed to load, in one pass.
+ *
+ * Rules mirror setBundleEnabled: core bundles always qualify, a known bundle or
+ * an installed package that declares dsh.bundle.patch qualifies when it is also
+ * declared in the profile dependencies. Everything else is reported as skipped
+ * with a reason, so the UI can explain a partial result instead of silently
+ * doing less than the button promised. The manifest is written once.
+ */
+function enableAllBundles(profileDir) {
+  const manifest = loadMutableManifest(profileDir);
+  const before = enabledBundles(manifest);
+  const dependencies = manifest.dependencies !== null && typeof manifest.dependencies === "object" ? manifest.dependencies : {};
+  const candidates = [...new Set([...before, ...Object.keys(dependencies)])].sort((left, right) => left.localeCompare(right, "en"));
+
+  const enabled = [];
+  const skipped = [];
+  for (const name of candidates) {
+    if (before.includes(name)) continue;
+    if (isCoreBundle(name)) {
+      enabled.push(name);
+      continue;
+    }
+    if (!isBundleLayer(profileDir, name)) {
+      skipped.push({ name, reason: "不是插件组合包（未声明 dsh.bundle.patch）" });
+      continue;
+    }
+    if (dependencies[name] === undefined) {
+      skipped.push({ name, reason: "不在该 Profile 的依赖中" });
+      continue;
+    }
+    enabled.push(name);
+  }
+
+  const after = [...before, ...enabled];
+  if (enabled.length > 0) setBundles(profileDir, manifest, after);
+  const patch = enablePatchEntries(profileDir);
+  return {
+    before,
+    after,
+    enabled,
+    skipped,
+    patchReenabled: patch.ids,
+    changed: enabled.length > 0 || patch.changed > 0,
+    manifestPath: path.join(profileDir, "package.json"),
+    patchPath: patch.path,
+  };
+}
+
 module.exports = {
   BUNDLE_METADATA,
   CATEGORY_LABEL,
@@ -376,6 +466,8 @@ module.exports = {
   defaultBundles,
   declaresBundle,
   describeBundle,
+  enableAllBundles,
+  enablePatchEntries,
   enabledBundles,
   isBundleLayer,
   listPlugins,

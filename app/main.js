@@ -30,6 +30,7 @@ const CHANNELS = [
   "recovery:profiles",
   "recovery:select-profile",
   "recovery:set-bundle-enabled",
+  "recovery:enable-all-bundles",
   "recovery:uninstall-bundle",
   "recovery:restore-removed",
   "recovery:discard-removed",
@@ -41,6 +42,7 @@ const CHANNELS = [
   "recovery:create-checkpoint",
   "recovery:restore-checkpoint",
   "recovery:delete-checkpoint",
+  "recovery:delete-all-checkpoints",
   "recovery:diagnostics",
   "recovery:export-diagnostics",
   "recovery:restart-button-apply",
@@ -109,8 +111,39 @@ async function runUiCheck({ shot }) {
   if (before.tabs.length !== 7) issues.push(`页签数量为 ${before.tabs.length}，期望 7`);
   if (!before.tabs.some((label) => label.includes("重启按钮"))) issues.push("页签中没有「重启按钮」");
   if (before.panelCount !== 7) issues.push(`面板数量为 ${before.panelCount}，期望 7`);
-  for (const method of ["restartButtonApply", "restartButtonRevert", "restartButtonVerify"]) {
+  for (const method of ["restartButtonApply", "restartButtonRevert", "restartButtonVerify", "enableAllBundles", "deleteAllCheckpoints"]) {
     if (!before.bridge.includes(method)) issues.push(`preload 桥缺少 ${method}`);
+  }
+
+  // The two one-click actions must be reachable from their panels, not just
+  // present in the bridge.
+  const panelProbe =
+    "((id) => { const node = document.querySelector(`.panel[data-panel=\"${id}\"]`); return node === null ? null : { text: node.innerText, actions: [...node.querySelectorAll('button[data-action]')].map((b) => ({ action: b.dataset.action, label: b.textContent, disabled: b.disabled })) }; })";
+  const pluginsPanel = await win.webContents.executeJavaScript(`${panelProbe}("plugins")`);
+  if (pluginsPanel === null) issues.push("找不到「插件管理」面板");
+  else if (!pluginsPanel.actions.some((button) => button.action === "enable-all-bundles")) issues.push("插件管理面板缺少「一键启用全部插件」按钮");
+  const checkpointsPanel = await win.webContents.executeJavaScript(`${panelProbe}("checkpoints")`);
+  if (checkpointsPanel === null) issues.push("找不到「回滚」面板");
+  else {
+    const sweep = checkpointsPanel.actions.find((button) => button.action === "delete-all-checkpoints");
+    if (sweep === undefined) issues.push("回滚面板缺少「一键删除全部」按钮");
+    else if (checkpointsPanel.text.includes("还没有检查点") && sweep.disabled !== true) issues.push("没有检查点时「一键删除全部」按钮仍可点击");
+  }
+
+  await win.webContents.executeJavaScript("document.querySelector('[data-action=\"tab\"][data-arg=\"restart\"]').click()");
+  await sleep(400);
+
+  // Capture each panel that gained a one-click button, so a ui-check run also
+  // leaves visual evidence for those two screens.
+  const extraShots = {};
+  for (const [panelId, suffix] of [["plugins", "plugins"], ["checkpoints", "checkpoints"]]) {
+    await win.webContents.executeJavaScript(`document.querySelector('[data-action="tab"][data-arg="${panelId}"]').click()`);
+    await sleep(400);
+    const file = shot.replace(/\.png$/i, `-${suffix}.png`);
+    const image = await win.webContents.capturePage();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, image.toPNG());
+    extraShots[suffix] = { file, bytes: fs.statSync(file).size };
   }
 
   await win.webContents.executeJavaScript("document.querySelector('[data-action=\"tab\"][data-arg=\"restart\"]').click()");
@@ -146,6 +179,11 @@ async function runUiCheck({ shot }) {
     activePanel: panel?.id ?? null,
     buttons: panel?.buttons ?? [],
     panelText: panel?.text ?? "",
+    oneClick: {
+      plugins: pluginsPanel?.actions.filter((button) => button.action === "enable-all-bundles") ?? [],
+      checkpoints: checkpointsPanel?.actions.filter((button) => button.action === "delete-all-checkpoints") ?? [],
+    },
+    extraShots,
     shot,
     shotBytes: fs.statSync(shot).size,
   };

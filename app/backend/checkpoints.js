@@ -192,11 +192,35 @@ function pruneCheckpoints(home, maxCheckpoints) {
   return { removed };
 }
 
+/**
+ * Delete every checkpoint slot, including the pre-restore snapshots that a
+ * restore created. Each entry is removed on its own: a slot that is locked by
+ * another program is reported as a failure instead of aborting the whole sweep,
+ * so one stubborn directory cannot leave the list half cleared with no account
+ * of it.
+ */
+function deleteAllCheckpoints(home) {
+  const all = listCheckpoints(home);
+  const removed = [];
+  const failed = [];
+  for (const entry of all) {
+    try {
+      removeEntry(entry.dir);
+      removed.push(entry.id);
+    } catch (error) {
+      failed.push({ id: entry.id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  const remaining = listCheckpoints(home);
+  return { removed, failed, remaining: remaining.map((entry) => entry.id), bytes: all.reduce((sum, entry) => sum + (Number.isFinite(entry.bytes) ? entry.bytes : 0), 0) };
+}
+
 module.exports = {
   CHECKPOINT_FILES,
   TRIGGER_LABEL,
   checkpointDir,
   createCheckpoint,
+  deleteAllCheckpoints,
   deleteCheckpoint,
   listCheckpoints,
   pruneCheckpoints,
