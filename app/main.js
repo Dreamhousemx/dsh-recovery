@@ -146,10 +146,10 @@ async function runUiCheck({ shot }) {
   await win.webContents.executeJavaScript("document.querySelector('[data-action=\"tab\"][data-arg=\"restart\"]').click()");
   await sleep(400);
 
-  // Capture each panel that gained a one-click button, so a ui-check run also
-  // leaves visual evidence for those two screens.
+  // Capture each panel that gained a one-click button (plus the overview
+  // panel), so a ui-check run also leaves visual evidence for those screens.
   const extraShots = {};
-  for (const [panelId, suffix] of [["plugins", "plugins"], ["checkpoints", "checkpoints"], ["diagnostics", "diagnostics"]]) {
+  for (const [panelId, suffix] of [["quick", "quick"], ["plugins", "plugins"], ["checkpoints", "checkpoints"], ["diagnostics", "diagnostics"]]) {
     await win.webContents.executeJavaScript(`document.querySelector('[data-action="tab"][data-arg="${panelId}"]').click()`);
     await sleep(400);
     const file = shot.replace(/\.png$/i, `-${suffix}.png`);

@@ -1,10 +1,17 @@
 # DSH 恢复器（dsh-recovery）
 
 一个**独立的桌面恢复控制台**，让 DeepSeek Harness 在无法正常启动时仍然可以被修复。
-项目拥有（七个标签页：快速恢复 / 插件管理 / 回滚 /
-重启按钮 / 切换 Profile / 重置与数据管理 / 诊断）。
+七个标签页：快速恢复 / 插件管理 / 回滚 / 重启按钮 / 切换 Profile / 重置与数据管理 / 诊断。
 
-![恢复器界面](docs/console-overview.png)
+![快速恢复](docs/quick-recovery-tab.png)
+
+| 插件管理 | 回滚 |
+| --- | --- |
+| ![插件管理](docs/plugins-tab.png) | ![回滚](docs/checkpoints-tab.png) |
+
+| 重启按钮 | 诊断 |
+| --- | --- |
+| ![重启按钮](docs/restart-button-tab.png) | ![诊断](docs/diagnostics-tab.png) |
 
 ## 为什么不做成 DSH 插件
 
@@ -37,6 +44,19 @@ setup-runtime.cmd --list
 .runtime\dsh-recovery.exe --ui-check              :: 截图默认写 .runtime\ui-restart-tab.png
 .runtime\dsh-recovery.exe --ui-check --ui-shot=D:\shot.png
 ```
+
+> 这三条自检在 PowerShell 里要**先清掉 `ELECTRON_RUN_AS_NODE`**
+> （DSH 会把它注入子进程环境，值为 `1` 时 Electron 会以纯 Node 模式启动，
+> 把 `--verify` 当成自己的未知开关并报 `bad option: --verify`）：
+>
+> ```powershell
+> Remove-Item Env:\ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+> Start-Process .\.runtime\dsh-recovery.exe -ArgumentList '--verify' `
+>   -RedirectStandardOutput verify.json -RedirectStandardError verify.err.txt `
+>   -PassThru -Wait -NoNewWindow
+> ```
+>
+> `dsh-recovery.cmd` 已经替你做掉这一步，直接双击运行不受影响。
 
 启动参数（同时会被记住到 `dsh-recovery.config.json`）：
 
@@ -110,7 +130,7 @@ setup-runtime.cmd --list
 | --- | --- | --- |
 | `--self-check` | 只读链路：目标探测、Profile 清单与补丁解析、检查点列表、运行状态 | 完全不写 |
 | `--verify` | 全部写操作：插件启用/禁用/**一键启用全部（含补丁层 disabled 解除）**/卸载/还原/永久删除、检查点创建/恢复/删除/**一键删除全部**、**手动指定/移除安装位置**（含无效目录拒绝）、安全模式启动、停止（精确匹配进程）、诊断包导出 | 只写一次性 fixture 与 `.safemode\`，结束前自清理 |
-| `--ui-check` | 真开窗口渲染一遍界面：页签数量与名称、`window.recovery` 桥接口、两个「一键」按钮的存在与禁用态、**诊断页「安装位置」按钮**、点开「重启按钮」页签后的活动面板与按钮可用性，并截图（含插件管理 / 回滚 / 诊断三张附加截图） | 只写截图 |
+| `--ui-check` | 真开窗口渲染一遍界面：页签数量与名称、`window.recovery` 桥接口、两个「一键」按钮的存在与禁用态、**诊断页「安装位置」按钮**、点开「重启按钮」页签后的活动面板与按钮可用性，并截图（含快速恢复 / 插件管理 / 回滚 / 诊断四张附加截图） | 只写截图 |
 
 `--verify`（42 项检查）在每次运行时构造一个合成环境 `\.runtime\verify-<时间戳>\`：
 一份假的安装目录（`resources\app\package.json` 声明为 `@deepseek-ai/dsh-desktop`）和一份假的
@@ -147,7 +167,8 @@ dsh-recovery/
     renderer/             原生 DOM 渲染界面（index.html / app.js / styles.css）
   restart-button/         重启按钮补丁：lib/（asar + patch 库 + 载荷生成 + 命令行）、payload/、backup/、*.cmd
   .runtime/               生成的 Electron 运行时 + resources/app 目录联接 + userdata
-                          以及 --ui-check 的截图（ui-restart-tab*.png）
+                          以及 --ui-check 的截图（ui-restart-tab*.png，docs/ 里的图即由此导出）
+  docs/                   README 用的界面截图
   diagnostics/            导出的诊断包（按需创建）
   dsh-recovery.config.json 记住的目标/Profile/数据目录
 ```
@@ -168,3 +189,34 @@ dsh-recovery/
 - 「新建 Profile」只提示由 DSH 自身初始化，不在控制台里代建。
 - 诊断包导出的是日志与配置快照，不含崩溃内存转储。
 - 控制台不加载 DSH 运行时，因此看不到插件加载的实时原因（那部分原因在应用日志里）。
+- 自动扫描只找常见根目录下的一层子目录；装在别处需要用**诊断 → 安装位置**手动指定（见上）。
+
+## 版本记录
+
+### 2026-10-18 · 手动指定安装位置
+
+- 诊断页新增「安装位置」卡：**选择安装目录… / 选择应用主程序…**，可切换、可移除手动指定的位置；
+  `adoptTarget` 接受安装目录、`resources` 子目录或 exe 路径，无效位置报错且不写配置。
+- 快速恢复页在「未找到目标应用」时也提供这两个入口。
+- `--verify` 增至 **42 项**（新增 8 项目标解析检查），`--ui-check` 增断言与第 4 张截图。
+
+### 2026-10-18 · 适配 DSH 0.2.1-rc.2
+
+- 官方更新把 `app.asar` 换成 182794869 字节的新版本，旧补丁随之丢失；按新源码
+  （`.dsh-src\lib-v021-rc2`）重新生成载荷：`lib/main.js` 490173 → **516716** 字节，
+  `lib/preload-app.cjs` 仍 41075 字节，依旧**等长原地改写**，asar 大小与所有偏移未变。
+- 新载荷 sha256：`lib/main.js` = `1bc3a7b9dee72cf93c924a14ac8dc79d63990ad7c7b6f18267211047509209d6`，
+  `lib/preload-app.cjs` = `e42784d0f4c072af03f78b2aba02ade4c6ed81609ae30e8320b67b3647116992`。
+- 升级后重打补丁的**正确顺序**：先搬走旧的 `restart-button\backup\`（否则会保留旧版本的
+  "首份备份"，`revert` 因长度不符失败），再 `build-payload.cjs --write`，最后 `apply.cjs apply`。
+
+### 2026-10-18 · 一键启用全部插件 / 一键删除全部检查点
+
+- 两个长列表页顶部各加一条**吸顶操作条**（列表再长也不用滚到底）。
+- 「一键启用」会同时把 `cordis.patch.yml` 里所有 `disabled: true` 改成 `false`
+  （只替换该行标量，缩进/注释/`config.enabled` 与换行风格原样保留）。
+
+### 2026-10-06 · 首个版本
+
+- 七个标签页、独立 Electron 运行时、三种自检、重启按钮补丁（界面 + 命令行）。
+
