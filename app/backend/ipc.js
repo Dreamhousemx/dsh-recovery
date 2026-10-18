@@ -123,6 +123,9 @@ class RecoveryController {
         resourcesDir: target.resourcesDir,
         hasAsarBackup: target.asarBackupPath !== undefined,
         runtimeVersions: target.runtimeVersions,
+        // Manually configured locations can be forgotten again; detected ones
+        // simply disappear once uninstalled.
+        manual: (config.targets ?? []).some((entry) => entry.id === target.id),
       })),
       selectedTargetId: selected?.id,
       selected,
@@ -230,6 +233,17 @@ class RecoveryController {
       case "recovery:set-target":
         return this.setTarget(String(args[0] ?? ""));
 
+      case "recovery:choose-target":
+        return this.chooseTarget({ exe: args[0] === "exe" });
+
+      case "recovery:adopt-target": {
+        const outcome = this.adoptTarget(String(args[0] ?? ""));
+        if (outcome.ok !== true) return outcome;
+        return { ok: true, result: outcome.result, state: await this.refresh({ sizes: true }) };
+      }
+      case "recovery:forget-target":
+        return this.forgetTarget(String(args[0] ?? ""));
+
       case "recovery:choose-home":
         return this.chooseHome();
 
@@ -332,6 +346,93 @@ class RecoveryController {
     this.persist({ targetId: id });
     this.record(true, `已切换目标应用: ${found.label ?? id}`);
     return { ok: true, state: await this.refresh({ sizes: false }) };
+  }
+
+  /**
+   * Adopt a manually chosen install location. Accepts the install directory,
+   * the executable inside it, or the `resources` subdirectory — people point at
+   * whichever of those they happened to be looking at. No dialog here, so the
+   * `--verify` run can exercise it headlessly.
+   */
+  adoptTarget(chosen, { persist = true } = {}) {
+    const raw = typeof chosen === "string" ? chosen.trim() : "";
+    if (raw === "") return { ok: false, error: "没有选择安装位置", state: this.state };
+    const absolute = path.resolve(raw);
+    const candidates = [];
+    const push = (value) => {
+      if (typeof value === "string" && value !== "" && !candidates.includes(value)) candidates.push(value);
+    };
+    push(absolute);
+    push(path.dirname(absolute));
+    if (path.basename(absolute).toLowerCase() === "resources") push(path.dirname(absolute));
+
+    let inspected;
+    let inspectedAt;
+    for (const candidate of candidates) {
+      if (!isDirectory(candidate)) continue;
+      inspected = paths.inspectInstall(candidate);
+      if (inspected !== undefined) {
+        inspectedAt = candidate;
+        break;
+      }
+    }
+    if (inspected === undefined) {
+      return {
+        ok: false,
+        error: `这不是有效的安装位置：${absolute}。需要包含 resources\\app.asar（或 resources\\app\\package.json）以及应用主程序的目录。`,
+        state: this.state,
+      };
+    }
+
+    // Keep the id stable and unique so the target survives in the config file.
+    const existing = Array.isArray(this.config.targets) ? this.config.targets : [];
+    const clash = existing.find((entry) => entry.id === inspected.id && path.resolve(entry.dir) !== inspected.dir);
+    const id = clash === undefined ? inspected.id : `${inspected.id}-2`;
+    const entry = {
+      id,
+      label: `${inspected.label}（${path.basename(inspected.dir)}）`,
+      dir: inspected.dir,
+    };
+    const targets = [...existing.filter((candidate) => path.resolve(candidate.dir) !== inspected.dir), entry];
+    // `persist: false` keeps the change in memory only; `--verify` uses it so the
+    // real config file stays byte-identical.
+    if (persist) this.persist({ targets, targetId: id });
+    else this.config = { ...this.config, targets, targetId: id };
+    const message = `已指定目标应用：${inspected.exe}`;
+    if (persist) this.record(true, message);
+    return { ok: true, result: { message, target: { ...inspected, id, label: entry.label }, inspectedAt }, state: this.state };
+  }
+
+  /** Pick an install directory or executable through the system file dialog. */
+  async chooseTarget({ exe = false } = {}) {
+    const current = this.state?.selected;
+    const result = await dialog.showOpenDialog({
+      title: exe ? "选择 DeepSeek Harness 主程序（.exe）" : "选择 DeepSeek Harness 安装目录",
+      defaultPath: exe ? current?.exe ?? current?.dir : current?.dir,
+      properties: exe ? ["openFile"] : ["openDirectory"],
+      filters: exe ? [{ name: "可执行文件", extensions: ["exe"] }] : undefined,
+      buttonLabel: "使用此位置",
+    });
+    if (result.canceled || result.filePaths.length === 0) return { ok: false, canceled: true, state: this.state };
+    const outcome = this.adoptTarget(result.filePaths[0]);
+    if (outcome.ok !== true) return outcome;
+    return { ok: true, result: outcome.result, state: await this.refresh({ sizes: true }) };
+  }
+
+  /** Drop a manually configured install location again. */
+  async forgetTarget(id, { persist = true } = {}) {
+    if (id === "") return { ok: false, error: "缺少应用标识", state: this.state };
+    const existing = Array.isArray(this.config.targets) ? this.config.targets : [];
+    const kept = existing.filter((entry) => entry.id !== id);
+    if (kept.length === existing.length) return { ok: false, error: `没有手动指定的应用: ${id}`, state: this.state };
+    if (persist) {
+      this.persist({ targets: kept, ...(this.config.targetId === id ? { targetId: null } : {}) });
+      this.record(true, `已移除手动指定的安装位置: ${id}`);
+    } else {
+      this.config = { ...this.config, targets: kept, ...(this.config.targetId === id ? { targetId: null } : {}) };
+    }
+    const message = `已移除手动指定的安装位置: ${id}`;
+    return { ok: true, result: { message }, state: await this.refresh({ sizes: false }) };
   }
 
   async chooseHome() {

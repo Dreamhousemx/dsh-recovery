@@ -24,6 +24,9 @@ const CHANNELS = [
   "recovery:refresh",
   "recovery:targets",
   "recovery:set-target",
+  "recovery:choose-target",
+  "recovery:adopt-target",
+  "recovery:forget-target",
   "recovery:choose-home",
   "recovery:reset-home",
   "recovery:reset-data",
@@ -111,7 +114,7 @@ async function runUiCheck({ shot }) {
   if (before.tabs.length !== 7) issues.push(`页签数量为 ${before.tabs.length}，期望 7`);
   if (!before.tabs.some((label) => label.includes("重启按钮"))) issues.push("页签中没有「重启按钮」");
   if (before.panelCount !== 7) issues.push(`面板数量为 ${before.panelCount}，期望 7`);
-  for (const method of ["restartButtonApply", "restartButtonRevert", "restartButtonVerify", "enableAllBundles", "deleteAllCheckpoints"]) {
+  for (const method of ["restartButtonApply", "restartButtonRevert", "restartButtonVerify", "enableAllBundles", "deleteAllCheckpoints", "chooseTarget", "adoptTarget", "forgetTarget"]) {
     if (!before.bridge.includes(method)) issues.push(`preload 桥缺少 ${method}`);
   }
 
@@ -130,13 +133,23 @@ async function runUiCheck({ shot }) {
     else if (checkpointsPanel.text.includes("还没有检查点") && sweep.disabled !== true) issues.push("没有检查点时「一键删除全部」按钮仍可点击");
   }
 
+  // Pointing the console at an install that auto-detection missed must be
+  // reachable from the diagnostics panel even when only one install is known.
+  const diagnosticsPanel = await win.webContents.executeJavaScript(`${panelProbe}("diagnostics")`);
+  if (diagnosticsPanel === null) issues.push("找不到「诊断」面板");
+  else {
+    for (const action of ["choose-target", "choose-target-exe"]) {
+      if (!diagnosticsPanel.actions.some((button) => button.action === action)) issues.push(`诊断面板缺少按钮 ${action}`);
+    }
+  }
+
   await win.webContents.executeJavaScript("document.querySelector('[data-action=\"tab\"][data-arg=\"restart\"]').click()");
   await sleep(400);
 
   // Capture each panel that gained a one-click button, so a ui-check run also
   // leaves visual evidence for those two screens.
   const extraShots = {};
-  for (const [panelId, suffix] of [["plugins", "plugins"], ["checkpoints", "checkpoints"]]) {
+  for (const [panelId, suffix] of [["plugins", "plugins"], ["checkpoints", "checkpoints"], ["diagnostics", "diagnostics"]]) {
     await win.webContents.executeJavaScript(`document.querySelector('[data-action="tab"][data-arg="${panelId}"]').click()`);
     await sleep(400);
     const file = shot.replace(/\.png$/i, `-${suffix}.png`);

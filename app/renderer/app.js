@@ -313,6 +313,12 @@ const ACTIONS = {
     await run("还原重启按钮补丁", "restartButtonRevert");
   },
   "set-target": (arg) => run("切换目标应用", "setTarget", arg),
+  "choose-target": () => run("选择安装位置", "chooseTarget"),
+  "choose-target-exe": () => run("选择应用主程序", "chooseTarget", "exe"),
+  "forget-target": async (arg) => {
+    if (!confirm(`移除手动指定的安装位置？\n\n${arg}\n\n移除后仍可通过「已发现的安装」或重新手动选择找回。确定继续吗？`)) return;
+    await run("移除手动指定的安装", "forgetTarget", arg);
+  },
   launch: (arg) => run(arg === "safe" ? "以安全模式启动" : "启动应用", "launchTarget", { mode: arg }),
   stop: () => run("停止应用", "stopTarget"),
   restart: (arg) => {
@@ -484,8 +490,12 @@ function renderQuick() {
       card({
         title: "未找到目标应用",
         danger: true,
-        desc: "恢复器没有在已知安装位置找到 DeepSeek Harness 或 DSH Desktop。可用 --target=<安装目录> 启动恢复器，或检查恢复器配置文件。",
-        actions: [button("打开恢复器配置", "open-path", state.config.file)],
+        desc: "恢复器没有在已知安装位置找到 DeepSeek Harness 或 DSH Desktop。可以直接选择安装目录或应用主程序，恢复器会把该位置记住。",
+        actions: [
+          button("选择安装目录…", "choose-target", undefined, { className: "btn--primary" }),
+          button("选择应用主程序…", "choose-target-exe"),
+          button("打开恢复器配置", "open-path", state.config.file),
+        ],
       }),
     );
   }
@@ -900,6 +910,31 @@ function renderDiagnostics() {
   return [
     hint("诊断包保存在本地，不会自动上传。"),
     card({
+      icon: "🧭",
+      title: "安装位置",
+      desc:
+        state.targets.filter((target) => target.manual === true).length === 0
+          ? "自动扫描只覆盖常见安装目录。如果 DeepSeek Harness 装在别处（例如其他盘符或自定义目录），可以在这里直接选择安装目录或应用主程序，恢复器会把该位置记住。"
+          : "下列位置已加入恢复器的目标清单。手动指定的安装可以随时移除；自动发现的会在卸载后自行消失。",
+      body: metrics([
+        ["当前目标应用", state.selected?.exe ?? "未找到", true],
+        ["已发现的安装", String(state.targets.length)],
+        ["手动指定的安装", String(state.targets.filter((target) => target.manual === true).length)],
+      ]),
+      actions: [
+        state.targets.length < 2
+          ? undefined
+          : select("target", state.selectedTargetId, state.targets.map((target) => ({ value: target.id, label: `${target.label}（${target.appVersion ?? "?"}）` }))),
+        button("选择安装目录…", "choose-target", undefined, {
+          className: state.selected?.exe === undefined ? "btn--primary" : undefined,
+        }),
+        button("选择应用主程序…", "choose-target-exe"),
+        state.selected?.manual === true
+          ? button("移除此手动指定的安装", "forget-target", state.selectedTargetId, { className: "btn--ghost" })
+          : undefined,
+      ],
+    }),
+    card({
       title: "诊断包",
       desc:
         state.diagnostics.count === 0
@@ -935,16 +970,11 @@ function renderDiagnostics() {
         ["Electron / Node", `${state.console.electron} / ${state.console.node}`],
         ["系统", state.console.platform],
         ["恢复器目录", state.console.root, true],
-        ["目标应用", state.selected?.exe ?? "未找到", true],
         ["应用版本", state.selected?.appVersion ?? "—"],
         ["应用 Electron", state.selected?.electronVersion ?? "—"],
-        ["已发现的安装", String(state.targets.length)],
         ["数据目录来源", state.home.sourceLabel],
         ["恢复器配置", state.config.file, true],
       ]),
-      actions: state.targets.length < 2 ? undefined : [
-        select("target", state.selectedTargetId, state.targets.map((target) => ({ value: target.id, label: `${target.label}（${target.appVersion ?? "?"}）` }))),
-      ],
     }),
   ];
 }

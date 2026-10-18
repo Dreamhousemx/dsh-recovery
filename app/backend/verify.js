@@ -349,6 +349,75 @@ async function verifyCheckpoints(controller, fixture, result) {
   );
 }
 
+async function verifyTargets(controller, fixture, result) {
+  // Manually pointing the console at an install that auto-detection missed.
+  // Nothing here persists: the real config file must stay byte-identical.
+  const configBefore = { ...controller.config };
+  const adopt = async (dir) => {
+    const outcome = controller.adoptTarget(dir, { persist: false });
+    if (outcome.ok === true) await controller.refresh({ sizes: false });
+    return outcome;
+  };
+
+  try {
+    const byDir = await adopt(fixture.installDir);
+    result.ok(
+      "目标: 手动指定安装目录",
+      byDir.ok === true &&
+        controller.state.selected?.dir === fixture.installDir &&
+        String(controller.state.selected?.exe).endsWith("verify-stub.exe"),
+      byDir.ok === true ? controller.state.selected.exe : byDir.error,
+    );
+    result.ok(
+      "目标: 手动指定的安装被标记为手动",
+      byDir.ok === true && controller.state.targets.some((target) => target.manual === true && target.dir === fixture.installDir),
+      byDir.ok === true ? JSON.stringify(controller.state.targets.map((target) => `${target.id}:${target.manual === true}`)) : byDir.error,
+    );
+
+    const byResources = await adopt(path.join(fixture.installDir, "resources"));
+    result.ok(
+      "目标: 从 resources 子目录反推安装目录",
+      byResources.ok === true && controller.state.selected?.dir === fixture.installDir,
+      byResources.ok === true ? byResources.result.target.dir : byResources.error,
+    );
+
+    const byExe = await adopt(path.join(fixture.installDir, "verify-stub.exe"));
+    result.ok(
+      "目标: 从主程序路径反推安装目录",
+      byExe.ok === true && controller.state.selected?.dir === fixture.installDir,
+      byExe.ok === true ? byExe.result.target.dir : byExe.error,
+    );
+
+    // The IPC surface has to reject junk without writing anything.
+    const rejected = await controller.dispatch("recovery:adopt-target", [fixture.work]);
+    result.ok(
+      "目标: 拒绝无效目录",
+      rejected.ok === false && /不是有效的安装位置/u.test(errorText(rejected) ?? ""),
+      errorText(rejected),
+    );
+
+    const empty = await controller.dispatch("recovery:adopt-target", ["   "]);
+    result.ok("目标: 拒绝空路径", empty.ok === false && /没有选择安装位置/u.test(errorText(empty) ?? ""), errorText(empty));
+
+    const adoptedId = byDir.ok === true ? byDir.result.target.id : "install";
+    const forgotten = await controller.forgetTarget(adoptedId, { persist: false });
+    result.ok(
+      "目标: 移除手动指定的安装",
+      forgotten.ok === true && !(controller.config.targets ?? []).some((entry) => entry.id === adoptedId),
+      errorText(forgotten) ?? forgotten.result?.message,
+    );
+    const forgetMissing = await controller.forgetTarget(adoptedId, { persist: false });
+    result.ok(
+      "目标: 移除不存在的安装会报错",
+      forgetMissing.ok === false && /没有手动指定的应用/u.test(errorText(forgetMissing) ?? ""),
+      errorText(forgetMissing),
+    );
+  } finally {
+    controller.config = configBefore;
+    await controller.refresh({ sizes: false });
+  }
+}
+
 async function verifyLaunch(controller, fixture, result, archive) {
   const target = controller.state.selected;
   const marker = path.join(fixture.work, "env.txt");
@@ -455,6 +524,7 @@ async function runVerify({ version, targets }) {
 
     await verifyPluginManagement(controller, fixture, result);
     await verifyCheckpoints(controller, fixture, result);
+    await verifyTargets(controller, fixture, result);
     await verifyLaunch(controller, fixture, result, archive);
 
     const exported = await controller.dispatch("recovery:export-diagnostics", []);
