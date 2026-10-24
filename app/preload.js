@@ -50,6 +50,14 @@ contextBridge.exposeInMainWorld("recovery", {
   restartButtonRevert: () => invoke("recovery:restart-button-revert"),
   restartButtonVerify: () => invoke("recovery:restart-button-verify"),
 
+  // --- plugin updater (works on the stopped profile) ---------------------
+  pluginUpdater: () => invoke("recovery:plugin-updater"),
+  pluginRepair: (dryRun) => invoke("recovery:plugin-repair", dryRun === true),
+  pluginInstall: (spec, dryRun) => invoke("recovery:plugin-install", spec, dryRun === true),
+  pluginUpdate: (spec, dryRun) => invoke("recovery:plugin-update", spec, dryRun === true),
+  pluginRemove: (name) => invoke("recovery:plugin-remove", name),
+  pluginCheck: (name) => invoke("recovery:plugin-check", name),
+
   // --- lifecycle ---------------------------------------------------------
   launchTarget: (options) => invoke("recovery:launch", options),
   stopTarget: () => invoke("recovery:stop"),

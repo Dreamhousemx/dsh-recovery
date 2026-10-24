@@ -535,9 +535,37 @@ body {
 }
 
 body[data-busy="1"] .btn,
-body[data-busy="1"] .select {
+body[data-busy="1"] .select,
+body[data-busy="1"] .input {
   pointer-events: none;
   opacity: 0.55;
+}
+
+/* --- inline text field -------------------------------------------------- */
+
+/* The plugin updater takes a package spec from the user (paste a name or a
+   pinned version), so it needs a text input beside its button. */
+.field-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  background: var(--card);
+  color: var(--text);
+}
+
+.input:focus {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: -1px;
 }
 
 /* --- footer ------------------------------------------------------------- */

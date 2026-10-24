@@ -51,6 +51,12 @@ const CHANNELS = [
   "recovery:restart-button-apply",
   "recovery:restart-button-revert",
   "recovery:restart-button-verify",
+  "recovery:plugin-updater",
+  "recovery:plugin-repair",
+  "recovery:plugin-install",
+  "recovery:plugin-update",
+  "recovery:plugin-remove",
+  "recovery:plugin-check",
   "recovery:launch",
   "recovery:stop",
   "recovery:restart",
@@ -111,10 +117,28 @@ async function runUiCheck({ shot }) {
   const before = await win.webContents.executeJavaScript(
     "({ tabs: [...document.querySelectorAll('#tabs [data-action=\"tab\"]')].map((node) => node.textContent), bridge: Object.keys(window.recovery ?? {}), panelCount: document.querySelectorAll('.panel').length, active: document.querySelector('.panel[data-active=\"true\"]')?.dataset.panel ?? null })",
   );
-  if (before.tabs.length !== 7) issues.push(`页签数量为 ${before.tabs.length}，期望 7`);
+  // Eight panels: the plugin updater joined the original seven so that the two
+  // in-app update defects (a stalled HMR queue, and the market refusing to
+  // update itself) have a path that works with the app stopped.
+  if (before.tabs.length !== 8) issues.push(`页签数量为 ${before.tabs.length}，期望 8`);
   if (!before.tabs.some((label) => label.includes("重启按钮"))) issues.push("页签中没有「重启按钮」");
-  if (before.panelCount !== 7) issues.push(`面板数量为 ${before.panelCount}，期望 7`);
-  for (const method of ["restartButtonApply", "restartButtonRevert", "restartButtonVerify", "enableAllBundles", "deleteAllCheckpoints", "chooseTarget", "adoptTarget", "forgetTarget"]) {
+  if (!before.tabs.some((label) => label.includes("插件更新"))) issues.push("页签中没有「插件更新」");
+  if (before.panelCount !== 8) issues.push(`面板数量为 ${before.panelCount}，期望 8`);
+  for (const method of [
+    "restartButtonApply",
+    "restartButtonRevert",
+    "restartButtonVerify",
+    "enableAllBundles",
+    "deleteAllCheckpoints",
+    "chooseTarget",
+    "adoptTarget",
+    "forgetTarget",
+    "pluginUpdater",
+    "pluginRepair",
+    "pluginInstall",
+    "pluginUpdate",
+    "pluginCheck",
+  ]) {
     if (!before.bridge.includes(method)) issues.push(`preload 桥缺少 ${method}`);
   }
 
@@ -133,6 +157,19 @@ async function runUiCheck({ shot }) {
     else if (checkpointsPanel.text.includes("还没有检查点") && sweep.disabled !== true) issues.push("没有检查点时「一键删除全部」按钮仍可点击");
   }
 
+  // The updater panel must expose its actions even on a healthy profile: an
+  // update is a manual action, not a repair, so "no problems" cannot hide it.
+  const updaterPanel = await win.webContents.executeJavaScript(`${panelProbe}("updater")`);
+  if (updaterPanel === null) issues.push("找不到「插件更新」面板");
+  else {
+    for (const action of ["plugin-repair", "plugin-update", "plugin-install"]) {
+      if (!updaterPanel.actions.some((button) => button.action === action)) issues.push(`插件更新面板缺少按钮 ${action}`);
+    }
+    if (!updaterPanel.text.includes("插件市场") && !updaterPanel.text.includes("dshmarket")) {
+      issues.push("插件更新面板没有提到插件市场自身");
+    }
+  }
+
   // Pointing the console at an install that auto-detection missed must be
   // reachable from the diagnostics panel even when only one install is known.
   const diagnosticsPanel = await win.webContents.executeJavaScript(`${panelProbe}("diagnostics")`);
@@ -149,7 +186,7 @@ async function runUiCheck({ shot }) {
   // Capture each panel that gained a one-click button (plus the overview
   // panel), so a ui-check run also leaves visual evidence for those screens.
   const extraShots = {};
-  for (const [panelId, suffix] of [["quick", "quick"], ["plugins", "plugins"], ["checkpoints", "checkpoints"], ["diagnostics", "diagnostics"]]) {
+  for (const [panelId, suffix] of [["quick", "quick"], ["plugins", "plugins"], ["updater", "updater"], ["checkpoints", "checkpoints"], ["diagnostics", "diagnostics"]]) {
     await win.webContents.executeJavaScript(`document.querySelector('[data-action="tab"][data-arg="${panelId}"]').click()`);
     await sleep(400);
     const file = shot.replace(/\.png$/i, `-${suffix}.png`);
@@ -196,6 +233,7 @@ async function runUiCheck({ shot }) {
       plugins: pluginsPanel?.actions.filter((button) => button.action === "enable-all-bundles") ?? [],
       checkpoints: checkpointsPanel?.actions.filter((button) => button.action === "delete-all-checkpoints") ?? [],
     },
+    updater: updaterPanel === null ? null : { actions: updaterPanel.actions, text: updaterPanel.text.slice(0, 400) },
     extraShots,
     shot,
     shotBytes: fs.statSync(shot).size,

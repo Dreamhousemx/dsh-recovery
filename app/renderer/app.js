@@ -11,6 +11,19 @@ const api = window.recovery;
 const TABS = [
   { id: "quick", label: "快速恢复" },
   { id: "plugins", label: "插件管理", badge: (value) => value.selectedProfileDetail?.plugins?.length },
+  // The market cannot update some plugins on Desktop (notably itself) and its
+  // remove path can stall; this tab performs the same operations against the
+  // stopped profile, so it advertises only the problems it can act on.
+  {
+    id: "updater",
+    label: "插件更新",
+    badge: (value) => {
+      const updater = value.pluginUpdater;
+      if (updater === undefined || updater.available !== true) return updater === undefined ? undefined : "!";
+      const count = (updater.inconsistent?.length ?? 0) + (updater.stale?.length ?? 0) + (updater.diagnose?.stuck?.length ?? 0);
+      return count === 0 ? undefined : count;
+    },
+  },
   { id: "checkpoints", label: "回滚", badge: (value) => value.checkpoints.length },
   {
     id: "restart",
@@ -312,6 +325,51 @@ const ACTIONS = {
     if (!confirm("还原重启按钮补丁？\n\n两个条目会恢复为补丁前的原始内容，「应用」菜单重新出现刷新页面 / 重启应用与Host。可以随时重新安装。确定继续吗？")) return;
     await run("还原重启按钮补丁", "restartButtonRevert");
   },
+
+  // --- plugin updater ----------------------------------------------------
+  "plugin-repair": async () => {
+    const running = state.running.isRunning;
+    if (running) return;
+    if (
+      !confirm(
+        "修复插件状态：\n\n" +
+          "· 清除上一次操作留下的写入锁与运行记录（仍被运行中进程持有的会保留）\n" +
+          "· 让 dsh.profile.bundles 与磁盘上实际安装的插件一致\n" +
+          "  （补回被宿主丢掉的条目；移除指向已不存在包的条目）\n" +
+          "· 不会改动 @deepseek-ai 自带的组件，也不会替你下载任何插件\n" +
+          "· 执行前会自动创建检查点\n\n确定继续吗？",
+      )
+    )
+      return;
+    await run("修复插件状态", "pluginRepair", false);
+  },
+  "plugin-repair-preview": () => run("预览修复内容", "pluginRepair", true),
+  "plugin-install": async () => {
+    const input = document.getElementById("plugin-install-input");
+    const spec = typeof input?.value === "string" ? input.value.trim() : "";
+    if (spec === "") {
+      toast("请先填入要安装的包名", "error");
+      return;
+    }
+    if (!confirm(`安装插件：${spec}\n\n会用 pnpm 安装到当前 Profile，装完校验入口文件与插件层条目。\n执行前会自动创建检查点。确定继续吗？`)) return;
+    const response = await run(`安装 ${spec}`, "pluginInstall", spec, false);
+    if (response?.ok === true && input !== null) input.value = "";
+  },
+  "plugin-update": async (arg) => {
+    const plugin = state.pluginUpdater?.rows?.find((entry) => entry.name === arg);
+    const from = plugin?.version;
+    if (
+      !confirm(
+        `升级插件：${arg}${from === undefined ? "" : `（当前 ${from}）`}\n\n` +
+          "会用 pnpm 重新解析并安装最新版本，然后校验入口文件与插件层条目。\n" +
+          "这是市场里「更新」失败时应当走的方式：应用已退出，不会卡在 HMR 队列上。\n" +
+          "执行前会自动创建检查点。确定继续吗？",
+      )
+    )
+      return;
+    await run(`升级 ${arg}`, "pluginUpdate", arg, false);
+  },
+  "plugin-check": (arg) => run(`检查 ${arg}`, "pluginCheck", arg),
   "set-target": (arg) => run("切换目标应用", "setTarget", arg),
   "choose-target": () => run("选择安装位置", "chooseTarget"),
   "choose-target-exe": () => run("选择应用主程序", "chooseTarget", "exe"),
@@ -413,6 +471,7 @@ function renderPanels() {
   clear(host);
   host.append(panel("quick", renderQuick()));
   host.append(panel("plugins", renderPlugins()));
+  host.append(panel("updater", renderUpdater()));
   host.append(panel("checkpoints", renderCheckpoints()));
   host.append(panel("restart", renderRestartButton()));
   host.append(panel("profiles", renderProfiles()));
@@ -644,6 +703,207 @@ function pluginRow(plugin, running) {
       }),
     ],
   });
+}
+
+// --- panel: plugin updater ------------------------------------------------
+
+/**
+ * Why this panel exists rather than "just use the market": on DSH Desktop 0.2.1
+ * the in-app update path runs `removeBundle()` → pnpm → `hmr.runExclusive()`,
+ * and that queue never settles if a plugin's teardown does. pnpm has already
+ * deleted the old copy by then, so the UI sticks on "Removing…" and the plugin
+ * is gone after a restart. The market also refuses to update itself
+ * (`market-self-update`) because removing it unloads the code that would run
+ * the reinstall. Both disappear when the package change happens with the app
+ * stopped — which is exactly what this console can arrange.
+ */
+function renderUpdater() {
+  const info = state.pluginUpdater;
+  const running = state.running.isRunning;
+
+  if (info === undefined) {
+    return [hint("插件更新数据尚未读取，请点「刷新」。")];
+  }
+  if (info.available !== true) {
+    return [
+      hint(`无法读取 Profile 的插件状态：${info.reason ?? "未知原因"}`),
+      hint(`Profile 目录：${info.profileDir ?? "—"}`),
+    ];
+  }
+
+  const stuck = info.diagnose?.stuck ?? [];
+  const notes = info.diagnose?.notes ?? [];
+  const stale = info.stale ?? [];
+  const inconsistent = info.inconsistent ?? [];
+  const rows = info.rows ?? [];
+  const installed = rows.filter((entry) => entry.version !== undefined && entry.declared !== undefined);
+  const problemCount = stuck.length + stale.length + inconsistent.length;
+
+  const nodes = [
+    panelBar(
+      problemCount === 0 ? "插件状态一致" : `发现 ${problemCount} 处需要处理`,
+      [
+        button("修复插件状态", "plugin-repair", undefined, {
+          className: "btn--primary",
+          disabled: running,
+          title: running ? "目标应用正在运行，请先停止或退出应用" : "清理僵死的写入锁与运行记录，并让插件层与磁盘保持一致",
+        }),
+        button("预览修复内容", "plugin-repair-preview", undefined, { className: "btn--ghost" }),
+        button("刷新", "refresh", undefined, { className: "btn--ghost" }),
+      ],
+    ),
+    hint(
+      "这些操作直接对 Profile 执行 pnpm，等价于在 DSH 完全退出后手工升级。应用运行时会禁用写入 —— 该状态下市场自己的更新会卡在 HMR 队列上，这里不会。" +
+        (info.pnpm === undefined
+          ? " 未找到 pnpm，安装/升级/卸载不可用（修复仍可用）。"
+          : ` 使用 ${info.pnpm.source}${info.pnpm.version === undefined ? "" : ` 的 pnpm ${info.pnpm.version}`}。`),
+    ),
+    running ? card({ danger: true, title: "请先退出 DSH", desc: `应用正在运行（PID ${runningPidText(state.running)}）。请用下方「停止」或直接退出 DSH（含托盘图标），然后刷新本页。运行中写入会被应用退出流程覆盖。` }) : undefined,
+  ];
+
+  // --- what went wrong last time ------------------------------------------
+  if (stuck.length > 0) {
+    nodes.push(
+      card({
+        title: "上次操作卡住了",
+        desc: "这些操作只有开始、没有结果。若 pnpm 日志已经写完，说明卡点在 pnpm 之后的宿主重组，而不是包管理器。",
+        tags: [chip(`${stuck.length} 项`, "warn")],
+        body: list(
+          stuck.map((entry) =>
+            row({
+              name: entry.name,
+              mono: true,
+              sub: joinSub(
+                entry.at === undefined ? undefined : new Date(entry.at).toLocaleString("zh-CN"),
+                entry.event,
+                entry.pnpmFinished ? "pnpm 已完成" : "pnpm 未确认完成",
+                entry.logDir,
+              ),
+              side: [
+                chip(entry.pnpmFinished ? "卡在 HMR" : "原因待定", entry.pnpmFinished ? "warn" : undefined),
+                button("重新升级到最新", "plugin-update", entry.name, { className: "btn--primary", disabled: running }),
+              ],
+            }),
+          ),
+        ),
+      }),
+    );
+  }
+
+  if (stale.length > 0) {
+    nodes.push(
+      card({
+        title: "残留的锁与运行记录",
+        desc: "上一次操作留下的写入锁或运行记录会挡住市场后续的所有操作。修复会清掉它们（仍在运行的进程持有的会保留）。",
+        body: list(
+          stale.map((item) =>
+            row({
+              name: item.label ?? item.kind,
+              sub: joinSub(item.path, item.pid === undefined ? undefined : `PID ${item.pid}`, item.alive ? "进程仍在运行" : "进程已退出"),
+              side: [chip(item.alive ? "保留" : "可清除", item.alive ? "warn" : "ok")],
+            }),
+          ),
+        ),
+      }),
+    );
+  }
+
+  // --- inconsistencies ----------------------------------------------------
+  if (inconsistent.length > 0) {
+    nodes.push(
+      card({
+        title: "不一致的插件",
+        desc: "这些问题会让下一次启动组不起插件，或在重启后发现「插件不见了」。",
+        tags: [chip(`${inconsistent.length} 个`, "warn")],
+        body: list(
+          inconsistent.map((entry) =>
+            row({
+              name: entry.name,
+              mono: true,
+              sub: entry.problems.join("；"),
+              side: [
+                button("重新安装", "plugin-install", entry.name, { disabled: running }),
+                button("检查", "plugin-check", entry.name, { className: "btn--ghost" }),
+              ],
+            }),
+          ),
+        ),
+      }),
+    );
+  }
+
+  // --- the one case with no in-app path -----------------------------------
+  const market = rows.find((entry) => entry.name === "dshmarket" || entry.name === "dsh-market");
+  if (market !== undefined) {
+    nodes.push(
+      card({
+        icon: "🔄",
+        title: "更新插件市场本身",
+        desc:
+          "桌面端的市场不能在自己发起的请求里更新自己（会先把市场从运行中的组合里摘掉，补装那一步就执行不到了），应用内也没有更新入口。这一项只能在这里做。",
+        body: metrics([
+          ["当前版本", market.version ?? "—"],
+          ["声明", market.declared ?? "—"],
+          ["插件层", market.inBundles ? "已启用" : "未在插件层"],
+        ]),
+        actions: [
+          button("升级到最新", "plugin-update", market.name, { className: "btn--primary", disabled: running }),
+          button("检查安装", "plugin-check", market.name),
+        ],
+      }),
+    );
+  }
+
+  // --- every updatable plugin ---------------------------------------------
+  nodes.push(
+    card({
+      title: "已安装的插件",
+      desc: "升级会用 pnpm 重新解析该包（包括固定版本号的那些），装完再校验入口文件与插件层条目。",
+      body:
+        installed.length === 0
+          ? empty("这个 Profile 还没有安装任何插件。")
+          : list(
+              installed.map((entry) =>
+                row({
+                  name: entry.name,
+                  mono: true,
+                  muted: entry.problems.length > 0,
+                  sub: joinSub(entry.version, entry.declared === entry.version ? undefined : `声明 ${entry.declared}`, entry.bundle ? undefined : "非插件包"),
+                  side: [
+                    chip(entry.inBundles ? "插件层" : "未启用", entry.inBundles ? "ok" : undefined),
+                    button("升级", "plugin-update", entry.name, { className: "btn--primary", disabled: running }),
+                    button("检查", "plugin-check", entry.name, { className: "btn--ghost" }),
+                  ],
+                }),
+              ),
+            ),
+    }),
+  );
+
+  // --- install by name ----------------------------------------------------
+  nodes.push(
+    card({
+      title: "安装一个插件",
+      desc: "填入 npm 包名或完整 spec（例如 dsh-connect-workbuddy 或 name@1.2.3）。装完若该包声明了 dsh.bundle，会自动加入插件层。",
+      body: el("div", { class: "field-row" }, [
+        el("input", {
+          class: "input",
+          type: "text",
+          placeholder: "包名或 name@version",
+          id: "plugin-install-input",
+          spellcheck: "false",
+          disabled: running,
+        }),
+        button("安装", "plugin-install", undefined, { className: "btn--primary", disabled: running }),
+      ]),
+    }),
+  );
+
+  if (notes.length > 0) {
+    nodes.push(card({ title: "日志说明", desc: "以下情况已经不需要处理，仅作记录。", body: list(notes.map((note) => row({ name: note, muted: true })) ) }));
+  }
+
+  return nodes.filter((node) => node !== undefined);
 }
 
 // --- panel: rollback ------------------------------------------------------

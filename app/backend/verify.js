@@ -158,6 +158,9 @@ function buildFixture(root) {
     version: "1.0.0",
     dsh: { bundle: { patch: "./patch.yml" } },
   });
+  // The bundle declares patch.yml, so the fixture must actually contain it —
+  // otherwise the updater's own "declared patch exists" check is right to fail.
+  fs.writeFileSync(path.join(profileDir, "node_modules", FIXTURE_BUNDLE, "patch.yml"), "- insert: []\n");
   writeJsonAtomic(path.join(profileDir, "node_modules", FIXTURE_DEP, "package.json"), {
     name: FIXTURE_DEP,
     version: "1.0.0",
@@ -274,6 +277,105 @@ async function verifyPluginManagement(controller, fixture, result) {
       !fs.existsSync(path.join(fixture.profileDir, paths.RECOVERY_STATE_DIR_NAME, "removed", String(discardId))),
     errorText(discarded),
   );
+}
+
+async function verifyPluginUpdater(controller, fixture, result) {
+  const manifestPath = path.join(fixture.profileDir, "package.json");
+  const depsOf = () => readJson(manifestPath).value?.dependencies ?? {};
+  const bundlesOf = () => readJson(manifestPath).value?.dsh?.profile?.bundles ?? [];
+
+  // The panel's data must be complete on a healthy profile: it is an update
+  // surface first, a repair surface second.
+  const { pluginUpdater } = controller.state;
+  result.ok(
+    "插件更新: 状态可读",
+    pluginUpdater?.available === true && Array.isArray(pluginUpdater.rows) && pluginUpdater.rows.some((row) => row.name === FIXTURE_BUNDLE),
+    pluginUpdater?.reason,
+  );
+  result.ok(
+    "插件更新: 面板数据带上 pnpm 解析结果",
+    pluginUpdater?.pnpm === undefined || typeof pluginUpdater.pnpm.source === "string",
+    JSON.stringify(pluginUpdater?.pnpm),
+  );
+
+  // --- repair: a stale lock, a dead run record, a dropped bundle row --------
+  const lockPath = path.join(fixture.profileDir, "package.json.lock");
+  const runPath = path.join(fixture.profileDir, ".plugin-manager", "run.json");
+  fs.writeFileSync(lockPath, "999999\n");
+  ensureDir(path.dirname(runPath));
+  fs.writeFileSync(runPath, JSON.stringify({ pid: 999998, grouped: false }));
+
+  // The #935 shape: a bundle on disk whose row the host dropped on its way to
+  // refusing an update.
+  const dropped = readJson(manifestPath);
+  dropped.value.dsh.profile.bundles = [];
+  writeJsonAtomic(manifestPath, dropped.value);
+  // An unbacked row, which would stop the next boot from composing.
+  dropped.value.dsh.profile.bundles = ["ghost-from-a-failed-install"];
+  writeJsonAtomic(manifestPath, dropped.value);
+
+  const preview = await controller.dispatch("recovery:plugin-repair", [true]);
+  result.ok(
+    "插件更新: 预览修复不写入",
+    preview.ok === true &&
+      fs.existsSync(lockPath) &&
+      (readJson(manifestPath).value?.dsh?.profile?.bundles ?? []).includes("ghost-from-a-failed-install"),
+    errorText(preview),
+  );
+
+  const repaired = await controller.dispatch("recovery:plugin-repair", [false]);
+  const repairedBundles = bundlesOf();
+  result.ok(
+    "插件更新: 修复清除僵死锁与运行记录",
+    repaired.ok === true && !fs.existsSync(lockPath) && !fs.existsSync(runPath),
+    errorText(repaired),
+  );
+  result.ok(
+    "插件更新: 修复补回被丢掉的插件层条目",
+    repairedBundles.includes(FIXTURE_BUNDLE),
+    JSON.stringify(repairedBundles),
+  );
+  result.ok(
+    "插件更新: 修复删掉指向不存在包的条目",
+    !repairedBundles.includes("ghost-from-a-failed-install"),
+    JSON.stringify(repairedBundles),
+  );
+  result.ok(
+    "插件更新: 修复不碰安装自带的核心组件",
+    (() => {
+      const planted = readJson(manifestPath);
+      planted.value.dsh.profile.bundles = [CORE_BUNDLE, FIXTURE_BUNDLE];
+      writeJsonAtomic(manifestPath, planted.value);
+      const outcome = require("./plugin-updater").repair(fixture.profileDir, { installDir: fixture.installDir });
+      return outcome.ok === true && bundlesOf().includes(CORE_BUNDLE);
+    })(),
+    JSON.stringify(bundlesOf()),
+  );
+
+  // --- check ---------------------------------------------------------------
+  const healthy = await controller.dispatch("recovery:plugin-check", [FIXTURE_BUNDLE]);
+  result.ok("插件更新: 校验一致的插件", healthy.ok === true, errorText(healthy) ?? healthy.result?.message);
+  const missing = await controller.dispatch("recovery:plugin-check", ["not-installed"]);
+  result.ok("插件更新: 校验缺失的插件会失败", missing.ok === false, missing.result?.message);
+
+  // --- update/install/remove are refused while the app runs ----------------
+  // The fixture's stub executable is not launched here, so the update path is
+  // exercised for its refusal shape only: a name that is not installed must be
+  // rejected before pnpm is touched.
+  const unavailable = await controller.dispatch("recovery:plugin-update", ["definitely-not-installed"]);
+  result.ok(
+    "插件更新: 升级未安装的包被拒绝",
+    unavailable.ok === false && /没有安装/u.test(errorText(unavailable) ?? ""),
+    errorText(unavailable),
+  );
+  result.ok(
+    "插件更新: 拒绝后 profile 未被改动",
+    depsOf()[FIXTURE_BUNDLE] === "1.0.0" && !Object.hasOwn(depsOf(), "definitely-not-installed"),
+    JSON.stringify(depsOf()),
+  );
+
+  const emptySpec = await controller.dispatch("recovery:plugin-install", ["", false]);
+  result.ok("插件更新: 空的安装名被拒绝", emptySpec.ok === false, errorText(emptySpec));
 }
 
 async function verifyCheckpoints(controller, fixture, result) {
@@ -523,6 +625,7 @@ async function runVerify({ version, targets }) {
     );
 
     await verifyPluginManagement(controller, fixture, result);
+    await verifyPluginUpdater(controller, fixture, result);
     await verifyCheckpoints(controller, fixture, result);
     await verifyTargets(controller, fixture, result);
     await verifyLaunch(controller, fixture, result, archive);

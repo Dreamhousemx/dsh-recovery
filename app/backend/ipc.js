@@ -20,6 +20,7 @@ const checkpoints = require("./checkpoints");
 const launcher = require("./launcher");
 const diagnostics = require("./diagnostics");
 const restartButton = require("./restart-button");
+const updater = require("./plugin-updater");
 
 function isWithin(parent, child) {
   const relative = path.relative(parent, child);
@@ -146,6 +147,10 @@ class RecoveryController {
       },
       safeModeHomes: launcher.listSafeModeHomes(),
       restartButton: { ...restartButtonPatch, lastRun: this.lastRestartRun },
+      // The in-app market cannot update some plugins (notably itself) and its
+      // remove path can hang, so the console offers the same operations against
+      // the stopped profile. It is read-only unless a channel below is called.
+      pluginUpdater: this.summarizeUpdater(selected, home),
       lastAction: this.lastAction,
       busy: this.busy,
     };
@@ -179,6 +184,79 @@ class RecoveryController {
 
   profileDir() {
     return paths.resolveProfileDir(this.requireProfileName(), this.state.home.path);
+  }
+
+  /**
+   * The plugin-updater view of the current profile.
+   *
+   * `gather()` must never fail because of this section: a profile whose
+   * manifest cannot be parsed is exactly the profile the console exists for, so
+   * every read error is reported as data instead of thrown.
+   */
+  summarizeUpdater(target, home) {
+    const profileDir = path.join(home, "profiles", this.selectedProfile);
+    const installDir = updater.installDirOf(target);
+    try {
+      if (!isDirectory(profileDir)) {
+        return { available: false, reason: `Profile 目录不存在: ${profileDir}`, profileDir };
+      }
+      const summary = updater.summarize(profileDir, { installDir });
+      return {
+        available: true,
+        ...summary,
+        installDir,
+        // What the panel needs to decide which buttons are live. `running` is
+        // read by the renderer from its own state, so nothing here depends on
+        // `this.state` being assigned already.
+        needsRepair: summary.stale.length > 0 || summary.inconsistent.length > 0,
+        updatable: summary.rows.filter((row) => row.version !== undefined && row.declared !== undefined),
+      };
+    } catch (error) {
+      return { available: false, reason: describeError(error), profileDir, installDir };
+    }
+  }
+
+  /** The profile dir the updater channels act on, refusing anything outside the DSH home. */
+  requireUpdaterDir() {
+    const dir = this.profileDir();
+    if (!isDirectory(dir)) throw new Error(`Profile 目录不存在: ${dir}`);
+    return dir;
+  }
+
+  requireUpdaterPnpm() {
+    const installDir = updater.installDirOf(this.state?.selected);
+    const runner = updater.resolvePnpm(installDir);
+    if (runner === undefined) {
+      throw new Error("找不到可用的 pnpm：DSH 安装目录里没有自带运行时，环境变量 DSH_PNPM_ENTRY 也没有指向可执行文件，PATH 上也没有 pnpm。");
+    }
+    return installDir;
+  }
+
+  /**
+   * Run one updater action with the console's safety rules applied:
+   * the app must be stopped, the precondition must hold, a checkpoint is taken
+   * before anything is written, and the outcome is recorded like every other
+   * mutation.
+   *
+   * `precheck` runs BEFORE the checkpoint and before pnpm is resolved: asking to
+   * update a package that is not installed must fail on that fact, not on
+   * "no pnpm found", and must not leave an empty checkpoint behind.
+   */
+  async runUpdater(action, label, mutator, options = {}) {
+    return this.perform(label, async () => {
+      this.requireIdle();
+      const dir = this.requireUpdaterDir();
+      if (typeof options.precheck === "function") options.precheck(dir);
+      const installDir = updater.installDirOf(this.state?.selected);
+      if (options.needsPnpm === true && updater.resolvePnpm(installDir) === undefined) {
+        throw new Error(
+          "找不到可用的 pnpm：DSH 安装目录里没有自带运行时，环境变量 DSH_PNPM_ENTRY 也没有指向可执行文件，PATH 上也没有 pnpm。",
+        );
+      }
+      const checkpoint = await this.autoCheckpoint(`${label} 之前`);
+      const outcome = mutator(dir, installDir);
+      return { message: outcome.message ?? `${label} 完成`, updater: outcome, checkpoint: checkpoint.id };
+    }, { sizes: true });
   }
 
   async autoCheckpoint(label) {
@@ -327,6 +405,79 @@ class RecoveryController {
 
       case "recovery:restart-button-verify":
         return this.restartButtonVerify();
+
+      case "recovery:plugin-updater":
+        return this.summarizeUpdater(this.state?.selected, this.state?.home?.path ?? paths.resolveDshHomeInfo(this.config.dshHome).path);
+
+      case "recovery:plugin-repair": {
+        const dryRun = args[0] === true;
+        if (dryRun) {
+          // A preview writes nothing, so it must stay available while the app
+          // runs — that is the one thing a dry run is for.
+          const dir = this.requireUpdaterDir();
+          const outcome = updater.repair(dir, { installDir: updater.installDirOf(this.state?.selected), dryRun: true });
+          return { ok: true, result: { message: outcome.message, updater: outcome }, state: this.state };
+        }
+        return this.runUpdater("修复插件状态", "修复插件状态", (dir, installDir) =>
+          updater.repair(dir, { installDir }), { needsPnpm: false });
+      }
+
+      case "recovery:plugin-install": {
+        const spec = String(args[0] ?? "").trim();
+        // The channels answer with { ok: false } instead of throwing: dispatch()
+        // is also called directly by --verify, where a throw would abort the run.
+        if (spec === "") return { ok: false, error: "缺少要安装的插件名", state: this.state };
+        if (args[1] === true) {
+          const dir = this.requireUpdaterDir();
+          const outcome = updater.install(dir, spec, { installDir: updater.installDirOf(this.state?.selected), dryRun: true });
+          return { ok: true, result: { message: outcome.message, updater: outcome }, state: this.state };
+        }
+        return this.runUpdater(`安装 ${spec}`, `安装 ${spec}`, (dir, installDir) =>
+          updater.install(dir, spec, { installDir }), {
+          needsPnpm: true,
+          precheck: () => {
+            if (!updater.SPEC_PATTERN.test(spec)) throw new Error(`拒绝把 ${JSON.stringify(spec)} 交给 pnpm`);
+          },
+        });
+      }
+
+      case "recovery:plugin-update": {
+        const spec = String(args[0] ?? "").trim();
+        if (spec === "") return { ok: false, error: "缺少要升级的插件名", state: this.state };
+        if (args[1] === true) {
+          const dir = this.requireUpdaterDir();
+          const outcome = updater.update(dir, spec, { installDir: updater.installDirOf(this.state?.selected), dryRun: true });
+          return { ok: true, result: { message: outcome.message, updater: outcome }, state: this.state };
+        }
+        return this.runUpdater(`升级 ${spec}`, `升级 ${spec}`, (dir, installDir) =>
+          updater.update(dir, spec, { installDir }), {
+          needsPnpm: true,
+          // "Not installed" is a fact about the profile, not about pnpm: say it
+          // before resolving a package manager or creating a checkpoint.
+          precheck: (dir) => {
+            const name = updater.registryNameOf(spec);
+            if (updater.installedVersion(dir, name) === undefined) {
+              throw new Error(`${name} 没有安装在这个 profile 里；请改用安装`);
+            }
+          },
+        });
+      }
+
+      case "recovery:plugin-remove": {
+        const name = String(args[0] ?? "").trim();
+        if (name === "") return { ok: false, error: "缺少要卸载的插件名", state: this.state };
+        return this.runUpdater(`卸载 ${name}`, `卸载 ${name}`, (dir, installDir) =>
+          updater.remove(dir, name, { installDir }), { needsPnpm: true });
+      }
+
+      case "recovery:plugin-check": {
+        const name = String(args[0] ?? "").trim();
+        const outcome = updater.check(this.requireUpdaterDir(), name, {
+          installDir: updater.installDirOf(this.state?.selected),
+        });
+        this.record(outcome.ok, outcome.message, outcome);
+        return { ok: outcome.ok, result: { message: outcome.message, updater: outcome }, state: this.state };
+      }
 
       case "recovery:quit":
         setImmediate(() => app.quit());
