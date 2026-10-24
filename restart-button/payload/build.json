@@ -1,7 +1,7 @@
 {
-  "builtAt": "2026-10-18T04:02:11.827Z",
+  "builtAt": "2026-10-24T05:35:36.398Z",
   "asar": "D:\\Dev Tools\\DeepSeek Harness\\resources\\app.asar",
-  "source": "D:\\Workspace\\DeepSeek Harness\\.dsh-src\\lib-v021-rc2",
+  "source": "D:\\Workspace\\DeepSeek Harness\\.dsh-src\\lib-v021-rc3",
   "targets": [
     {
       "file": "main.js",

@@ -1,13 +1,13 @@
 {
   "toolVersion": "1.0.0",
-  "installedAt": "2026-10-18T04:04:53.482Z",
+  "installedAt": "2026-10-24T05:36:02.726Z",
   "archive": "D:\\Dev Tools\\DeepSeek Harness\\resources\\app.asar",
   "entries": [
     {
       "entryPath": "lib/main.js",
       "action": "write",
-      "hash": "1bc3a7b9dee72cf93c924a14ac8dc79d63990ad7c7b6f18267211047509209d6",
-      "previousHash": "6f3d1ddd1106371452c2204be6dfb2e5460a8e8259cdd05cdccb5387b3f9a85a",
+      "hash": "5c79faddeac5069cae58abfc94225632cdaf9f55176751b14e81efb04af83fa2",
+      "previousHash": "f05dd366f6c468bedd83f07372bc59d3d6b3f6bcc6950565c8b4173597e3ba93",
       "hashHits": 2,
       "size": 516716
     },

@@ -4,7 +4,7 @@
 > 同一份实现既提供**恢复器界面里的「重启按钮」页签**（一键安装 / 校验 / 还原），
 > 也保留下面这套**命令行入口**（DSH 完全起不来、连恢复器都不想开时用）。
 
-给官方 **DeepSeek Harness** 桌面壳（`@deepseek-ai/dsh-desktop` 0.2.1-rc.2）的标题栏菜单栏
+给官方 **DeepSeek Harness** 桌面壳（`@deepseek-ai/dsh-desktop` 0.2.1-rc.3）的标题栏菜单栏
 加一个 **「重启」** 按钮，位置在「应用」「编辑」右侧。
 
 菜单结构变化（只动这两处）：
@@ -100,11 +100,11 @@ node lib\build-payload.cjs --write  :: 生成 payload\lib\{main.js,preload-app.c
 ```
 
 - 源码基线：`..\.dsh-src\lib\{main.js,preload-app.cjs}`（本工作区里保存的**未打补丁**解包副本，
-  可用 `DSH_PATCH_SRC=<dir>` 覆盖）。当前这份基线是 **0.2.1-rc.2** 的
-  `.dsh-src\lib-v021-rc2\`，官方再更新时同样要先解出新源码再指过去。
+  可用 `DSH_PATCH_SRC=<dir>` 覆盖）。当前这份基线是 **0.2.1-rc.3** 的
+  `.dsh-src\lib-v021-rc3\`，官方再更新时同样要先解出新源码再指过去。
 - 目标长度从 asar 头部实时读取，不写死；长度不符会直接报错中止。
-- 生成的载荷已通过 `node --check`；当前载荷（0.2.1-rc.2）sha256：
-  - `lib/main.js` → `1bc3a7b9dee72cf93c924a14ac8dc79d63990ad7c7b6f18267211047509209d6`
+- 生成的载荷已通过 `node --check`；当前载荷（0.2.1-rc.3）sha256：
+  - `lib/main.js` → `5c79faddeac5069cae58abfc94225632cdaf9f55176751b14e81efb04af83fa2`
   - `lib/preload-app.cjs` → `e42784d0f4c072af03f78b2aba02ade4c6ed81609ae30e8320b67b3647116992`
 
 ## 改动内容（逐处）
@@ -162,11 +162,12 @@ const launchRecoveryConsole = () => new Promise((resolve) => {
    且在写任何字节之前完成备份。
 2. **可逆（整包级别）**：在 asar **副本**上做 `revert` → `apply` → `verify`，
    两次改写各动 2 个条目，最后整包 sha256 与操作前**完全相同**：
-   - 副本来自当前线上补丁态整包 `a906284c15ab108e25c66a58b3e0f8d70cde9dae13269c3184cac83b5168b0f5`（182794869 B）；
-   - `revert`（touched 2）→ 得到官方原始整包 `47874618bf5b3011fcaac10cd4c85f69da333e70d4f99b921207c78d0999512a`；
-   - `apply`（changed 2）→ 又回到 `a906284c…`，`verify` failures 0；副本与临时文件随后删除。
-   早期版本（0.2.0-rc.2）上也做过同样的 `apply → verify → revert` 往返，当时复原到
-   `3f5cc17f99209f36799a373e0741d4890dbc384d2020877cd2755d9305c4e3a7`；
+   - 副本来自当前线上补丁态整包 `f99c48fc450f726584c49bce9524edb729aead84eb3bcd1f10245712e3155157`（182434783 B）；
+   - `revert`（touched 2）→ 得到官方原始整包 `04b32e3a872826ba15cfb2081c6a929a8d4ecaa65e09a2543e5a6b30e2eff1f0`；
+   - `apply`（changed 2）→ 又回到 `f99c48fc…`，`verify` failures 0；副本与临时文件随后删除。
+   早期版本（0.2.0-rc.2、0.2.1-rc.2）上也做过同样的 `apply → verify → revert` 往返，当时分别复原到
+   `3f5cc17f99209f36799a373e0741d4890dbc384d2020877cd2755d9305c4e3a7`、
+   `47874618bf5b3011fcaac10cd4c85f69da333e70d4f99b921207c78d0999512a`；
    并入恢复器后又用**界面按钮走的同一套代码**（`app\backend\restart-button.js`）复测过一遍。
 3. **头部自洽**：两个条目的 `integrity.hash` 与 `blocks[0]` 都被同步为新内容哈希，
    回读校验为「头部 integrity 与内容一致（1 块）」，`node --check` 通过。
@@ -179,16 +180,18 @@ const launchRecoveryConsole = () => new Promise((resolve) => {
 6. **本机已安装**：`apply` 已写入线上 asar，`status` 报「已安装（= 载荷）」，
    恢复器页签显示「已安装 2/2 · 头部 integrity 一致 · 有原始备份」。
 7. **界面自检**：恢复器带 `--ui-check`，会真的开一次窗口、点开「重启按钮」页签，
-   断言七个页签、桥接口、活动面板文案与按钮可用状态，然后截图退出（见 `dsh-recovery\README.md`）。
+   断言八个页签、桥接口、活动面板文案与按钮可用状态，然后截图退出（见 `dsh-recovery\README.md`）。
 
 ## 注意
 
 - **必须重启 DSH 才生效**：`lib/main.js` / `lib/preload-app.cjs` 只在启动/建窗时读取。
   重启会结束当前这个会话（我运行在 DSH 内部），所以最终效果需要你重启后确认。
 - **官方更新会覆盖 asar**：DSH Desktop 升级后 `resources\app.asar` 会被替换，补丁消失，需要重打。
-  正确顺序（本机 0.2.0-rc.2 → 0.2.1-rc.2 时踩过）：
+  正确顺序（本机 0.2.0-rc.2 → 0.2.1-rc.2 → 0.2.1-rc.3 都踩过）：
   1. 解出官方新的 `lib/main.js`、`lib/preload-app.cjs` 到 `.dsh-src\lib-v<版本>\`；
-  2. **先把旧的 `backup\` 整目录搬走**——`apply` 只保留"首份备份"，留着旧版备份会让 `revert` 因长度不符失败；
+  2. **先把旧的 `backup\` 整目录搬走**——`apply` 只保留"首份备份"。留着旧版备份时：长度变了
+     `revert` 会因长度不符失败；长度没变（如 rc.2 → rc.3）更糟，`revert` 会把**上一版**的字节
+     写回去，校验还全过，但内容是错的。搬走后建议归档成 `backup\v<版本>-<时间戳>\` 便于追溯；
   3. `set DSH_PATCH_SRC=<新目录>` 后跑 `node lib\build-payload.cjs --write`（长度从新头部读，不符会报错中止）；
   4. `node lib\apply.cjs apply`，再 `status` / `verify` 确认。asar 大小与偏移全程不变。
 - **请用本工具的 `revert.cmd`**，不要用 `dsh-restart-menu-patch\revert.cmd`：后者会把 asar
@@ -196,5 +199,5 @@ const launchRecoveryConsole = () => new Promise((resolve) => {
 - 安装/还原只改 `resources\app.asar` 里这两个条目（外加它们头部的哈希串），
   不触碰装机目录里的其它文件；`app.asar.dsh-restart-backup`（旧工具的整包备份）保持不动。
 - 恢复器路径可用环境变量 `DSH_RECOVERY_CONSOLE` 覆盖（在 DSH 的进程环境里设置）。
-- 仅针对本机这个版本（`@deepseek-ai/dsh-desktop` 0.2.1-rc.2，asar 182794869 B，
+- 仅针对本机这个版本（`@deepseek-ai/dsh-desktop` 0.2.1-rc.3，asar 182434783 B，
   条目 lib/main.js 516716 B / lib/preload-app.cjs 41075 B）。
