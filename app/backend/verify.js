@@ -14,6 +14,7 @@ const path = require("node:path");
 const checkpoints = require("./checkpoints");
 const launcher = require("./launcher");
 const paths = require("./paths");
+const awesome = require("./awesome");
 const { withoutAsar } = require("./asar");
 const { ensureDir, isDirectory, isFile, readJson, removeEntry, writeJsonAtomic } = require("./util");
 
@@ -167,7 +168,152 @@ function buildFixture(root) {
   });
   fs.writeFileSync(path.join(profileDir, "cordis.patch.yml"), `- id: fake-row\n  name: ${FIXTURE_BUNDLE}\n`);
 
-  return { installDir, home, profileDir, work };
+  // A synthetic plugin repository plus a synthetic clone of the awesome-list,
+  // so 收录插件 checks run on exactly the shapes contributing.md describes
+  // (a good submission, a client-only one, and a duplicate of another entry).
+  const pluginRepo = path.join(root, "plugin-repo");
+  ensureDir(path.join(pluginRepo, "lib"));
+  writeJsonAtomic(path.join(pluginRepo, "package.json"), {
+    name: "verify-plugin",
+    version: "1.0.0",
+    description: "A verify fixture plugin.",
+    main: "lib/index.js",
+    dsh: { bundle: { patch: "./cordis.patch.yml" }, client: { platform: "web" } },
+  });
+  fs.writeFileSync(path.join(pluginRepo, "lib", "index.js"), `"use strict";\nmodule.exports = { apply() {} };\n`.repeat(8));
+  fs.writeFileSync(path.join(pluginRepo, "cordis.patch.yml"), "- insert:\n    - id: verify-plugin\n      name: verify-plugin\n");
+  fs.writeFileSync(path.join(pluginRepo, "README.md"), "# verify-plugin\n");
+
+  const clientOnlyRepo = path.join(root, "client-only-repo");
+  ensureDir(clientOnlyRepo);
+  writeJsonAtomic(path.join(clientOnlyRepo, "package.json"), {
+    name: "verify-client-only",
+    version: "0.0.1",
+    dsh: { client: { platform: "web" } },
+  });
+  fs.writeFileSync(path.join(clientOnlyRepo, "README.md"), "# placeholder\n");
+
+  const listDir = path.join(root, "awesome-list");
+  ensureDir(path.join(listDir, "data", "plugins"));
+  writeJsonAtomic(path.join(listDir, "package.json"), { name: "awesome-dsh-plugin", version: "0.1.0" });
+  fs.writeFileSync(
+    path.join(listDir, "data", "plugins", "someone__verify-plugin.yml"),
+    "url: https://github.com/someone/verify-plugin\nname: someone/verify-plugin\ncategory: tools\ndescription:\n  en: Another plugin.\n",
+  );
+
+  return { installDir, home, profileDir, work, pluginRepo, clientOnlyRepo, listDir };
+}
+
+/**
+ * 收录插件: every check runs against the synthetic repositories above, so the
+ * rules are exercised without touching the network, the real DSH home, or any
+ * real submission.
+ */
+async function verifyAwesome(controller, fixture, result) {
+  const check = (options) => controller.dispatch("recovery:awesome-check", [options]);
+  const EN = "Verify plugin: adds one row to the settings page.";
+  const ZH = "验证插件：在设置页新增一行。";
+
+  const pass = await check({ dir: fixture.pluginRepo, repo: "acme/verify-plugin", descriptionEn: EN, descriptionZh: ZH, category: "ui" });
+  const passed = pass.awesome;
+  result.ok(
+    "收录: 合规仓库生成条目并通过检查",
+    pass.ok === true && passed?.fileName === "acme__verify-plugin.yml" && /^url: https:\/\/github\.com\/acme\/verify-plugin$/mu.test(passed?.yaml ?? ""),
+    errorText(pass) ?? JSON.stringify(passed?.counts),
+  );
+  result.ok(
+    "收录: 条目按 contributing.md 的字段顺序生成",
+    (passed?.yaml ?? "").startsWith("url: ") && /^name: acme\/verify-plugin$/mu.test(passed?.yaml ?? "") && /^category: ui$/mu.test(passed?.yaml ?? ""),
+    passed?.yaml,
+  );
+  result.ok(
+    "收录: 冒号后带空格的描述被加引号",
+    (() => {
+      const single = awesome.renderEntry({
+        url: "https://github.com/acme/x",
+        name: "acme/x",
+        category: "vision",
+        description: { en: "Vision toolkit: OCR, grounding and pixel diff." },
+      });
+      return single.includes("en: 'Vision toolkit: OCR, grounding and pixel diff.'");
+    })(),
+  );
+
+  const clientOnly = await check({ dir: fixture.clientOnlyRepo, repo: "acme/verify-client-only", descriptionEn: EN });
+  result.ok(
+    "收录: 只声明 dsh.client 被拒并说明原因",
+    clientOnly.ok === false && (clientOnly.awesome?.findings ?? []).some((item) => item.rule === "bundle" && item.level === "fail"),
+    errorText(clientOnly) ?? JSON.stringify(clientOnly.awesome?.counts),
+  );
+
+  // A missing description is the one required field: no entry, and above all no
+  // YAML containing the literal text `undefined`.
+  const noDescription = await check({ dir: fixture.pluginRepo, repo: "acme/verify-plugin", category: "ui" });
+  result.ok(
+    "收录: 缺 description.en 时不生成条目",
+    noDescription.ok === false && noDescription.awesome?.yaml === undefined && noDescription.awesome?.entry === undefined,
+    JSON.stringify({ verdict: noDescription.awesome?.verdict, yaml: noDescription.awesome?.yaml }),
+  );
+
+  await controller.dispatch("recovery:awesome-set-dir", ["list", fixture.listDir, { persist: false }]);
+  const duplicated = await check({ dir: fixture.pluginRepo, repo: "someone/verify-plugin", descriptionEn: EN });
+  result.ok(
+    "收录: 与已有条目重复时给出提示",
+    (duplicated.awesome?.findings ?? []).some((item) => item.rule === "duplicate" && item.level === "warn"),
+    JSON.stringify(duplicated.awesome?.findings?.filter((item) => item.rule === "duplicate")),
+  );
+
+  const four = await check({ dir: fixture.pluginRepo, repo: "acme/verify-plugin", descriptionEn: EN, countInPr: 4 });
+  result.ok(
+    "收录: 一个 PR 超过 3 条被拒",
+    four.ok === false && (four.awesome?.findings ?? []).some((item) => item.rule === "count" && item.level === "fail"),
+    errorText(four),
+  );
+
+  // A category is required before an entry file can exist: without one there is
+  // nothing to write, so this call supplies it explicitly.
+  const updated = await check({ dir: fixture.pluginRepo, repo: "acme/verify-plugin", descriptionEn: EN, category: "ui" });
+  const firstWrite = await controller.dispatch("recovery:awesome-write", [{}]);
+  const writtenFile = path.join(fixture.listDir, "data", "plugins", "acme__verify-plugin.yml");
+  result.ok(
+    "收录: 写入条目文件",
+    firstWrite.ok === true && isFile(writtenFile) && fs.readFileSync(writtenFile, "utf8") === updated.awesome?.yaml,
+    JSON.stringify({
+      error: errorText(firstWrite),
+      updatedOk: updated.ok,
+      updatedVerdict: updated.awesome?.verdict,
+      updatedFileName: updated.awesome?.fileName,
+      hasYaml: typeof updated.awesome?.yaml,
+      configList: controller.config.awesomeListDir,
+    }),
+  );
+  // Writing the same content again is a no-op, not an error.
+  const sameAgain = await controller.dispatch("recovery:awesome-write", [{}]);
+  result.ok("收录: 相同内容重复写入不报错", sameAgain.ok === true && sameAgain.result?.unchanged === true, errorText(sameAgain));
+
+  // A changed entry over somebody's existing file must be refused unless the
+  // caller explicitly opts into updating their own entry.
+  await check({ dir: fixture.pluginRepo, repo: "acme/verify-plugin", descriptionEn: "Changed wording for the same plugin.", category: "ui" });
+  const conflicting = await controller.dispatch("recovery:awesome-write", [{}]);
+  result.ok("收录: 同名但内容不同时拒绝覆盖", conflicting.ok === false, errorText(conflicting));
+  const forced = await controller.dispatch("recovery:awesome-write", [{ allowUpdate: true }]);
+  result.ok("收录: 明确允许时才更新已有条目", forced.ok === true && forced.result?.updated === true, errorText(forced));
+
+  // The existing entry belongs to somebody else and must survive untouched.
+  result.ok(
+    "收录: 不触碰别人的条目",
+    fs.readFileSync(path.join(fixture.listDir, "data", "plugins", "someone__verify-plugin.yml"), "utf8").includes("Another plugin."),
+  );
+
+  // Writing needs a real clone: a directory without data/plugins is refused.
+  const notAList = await controller.dispatch("recovery:awesome-set-dir", ["list", fixture.pluginRepo, { persist: false }]);
+  result.ok("收录: 非列表目录被拒绝", notAList.ok === false, errorText(notAList));
+  // ...and the previous selection must not have been clobbered by the refusal.
+  result.ok(
+    "收录: 拒绝时不改写已选目录",
+    controller.config.awesomeListDir === path.resolve(fixture.listDir),
+    controller.config.awesomeListDir,
+  );
 }
 
 async function verifyPluginManagement(controller, fixture, result) {
@@ -626,6 +772,7 @@ async function runVerify({ version, targets }) {
 
     await verifyPluginManagement(controller, fixture, result);
     await verifyPluginUpdater(controller, fixture, result);
+    await verifyAwesome(controller, fixture, result);
     await verifyCheckpoints(controller, fixture, result);
     await verifyTargets(controller, fixture, result);
     await verifyLaunch(controller, fixture, result, archive);

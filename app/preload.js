@@ -58,6 +58,15 @@ contextBridge.exposeInMainWorld("recovery", {
   pluginRemove: (name) => invoke("recovery:plugin-remove", name),
   pluginCheck: (name) => invoke("recovery:plugin-check", name),
 
+  // --- 收录插件 (awesome-dsh-plugin submission) ---------------------------
+  openExternal: (url) => invoke("recovery:open-external", url),
+  awesomeChooseDir: (which) => invoke("recovery:awesome-choose-dir", which),
+  copyText: (text) => invoke("recovery:copy-text", text),
+  awesomeSetDir: (which, dir) => invoke("recovery:awesome-set-dir", which, dir),
+  awesomeForgetDir: (which) => invoke("recovery:awesome-forget-dir", which),
+  awesomeCheck: (options) => invoke("recovery:awesome-check", options),
+  awesomeWrite: (options) => invoke("recovery:awesome-write", options),
+
   // --- lifecycle ---------------------------------------------------------
   launchTarget: (options) => invoke("recovery:launch", options),
   stopTarget: () => invoke("recovery:stop"),

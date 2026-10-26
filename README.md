@@ -1,7 +1,7 @@
 # DSH 恢复器（dsh-recovery）
 
 一个**独立的桌面恢复控制台**，让 DeepSeek Harness 在无法正常启动时仍然可以被修复。
-八个标签页：快速恢复 / 插件管理 / **插件更新** / 回滚 / 重启按钮 / 切换 Profile / 重置与数据管理 / 诊断。
+九个标签页：快速恢复 / 插件管理 / **插件更新** / 回滚 / **收录插件** / 重启按钮 / 切换 Profile / 重置与数据管理 / 诊断。
 
 ![快速恢复](docs/quick-recovery-tab.png)
 
@@ -12,6 +12,8 @@
 | 回滚 | 重启按钮 | 诊断 |
 | --- | --- | --- |
 | ![回滚](docs/checkpoints-tab.png) | ![重启按钮](docs/restart-button-tab.png) | ![诊断](docs/diagnostics-tab.png) |
+
+![收录插件](docs/awesome-tab.png)
 
 ## 为什么不做成 DSH 插件
 
@@ -27,6 +29,10 @@ DSH 插件只有在 DSH（以及它的 Profile）成功启动之后才会被加�
 ```bat
 :: 启动（首次会自动准备运行时）
 dsh-recovery.cmd
+
+:: 在桌面创建快捷方式（带专属图标）
+create-shortcut.cmd                 :: → 桌面「DSH 恢复模式.lnk」
+create-shortcut.cmd 我的恢复模式    :: → 自定义名称
 
 :: 只准备 / 刷新运行时（在安装或升级 DeepSeek Harness 之后运行）
 setup-runtime.cmd
@@ -66,7 +72,7 @@ setup-runtime.cmd --list
 | `--profile=<名称>` | 要操作的 Profile，默认 `desktop` |
 | `--home=<目录>` | DSH 数据目录，默认取环境变量 `DSH_HOME`，否则 `%USERPROFILE%\.dsh` |
 
-## 八个标签页
+## 九个标签页
 
 | 页面 | 能力 |
 | --- | --- |
@@ -74,6 +80,7 @@ setup-runtime.cmd --list
 | 插件管理 | 按行启用/禁用组合包（写入 `package.json` 的 `dsh.profile.bundles`）；**一键启用全部插件**（并解除补丁层 `disabled: true`）；卸载到**隔离区**并可还原；只读列出「其他依赖」与补丁条目 |
 | 插件更新 | 直接对**已停止的 Profile** 执行 pnpm：安装 / 升级 / 卸载 / 单包校验；**修复插件状态**（清僵死写入锁与运行记录、让插件层与磁盘一致）；解析市场日志说明上次操作卡在哪。用于绕开应用内「更新卡在 remove」与「市场不能更新自己」两个宿主缺陷，详见下文 |
 | 回滚 | 列出检查点（槽位）、创建、恢复、删除；**一键删除全部检查点**；每个检查点记录插件清单、组合包列表、补丁和被禁用的行 |
+| **收录插件** | 按 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 的 `contributing.md` 逐条核对插件仓库，生成可直接提交的 `data/plugins/<owner>__<repo>.yml`；指定列表克隆后还能查重并写入。**只读**，不需要停止 DSH。规则与流程见 [docs/awesome-plugin-submission.md](docs/awesome-plugin-submission.md) |
 | 重启按钮 | 给官方 `app.asar` 安装/校验/还原**「重启」菜单补丁**（菜单栏「应用」「编辑」右侧多一个「重启」，内含刷新页面 / 重启应用与 Host / 重启到恢复模式）；显示两个条目的判定、头部 integrity 与备份状态 |
 | 切换 Profile | 列出可用 Profile（插件数/补丁数），切换当前 Profile；「新建 Profile」交由 DSH 自身的初始化流程完成 |
 | 重置与数据管理 | 查看/更改 DSH 数据目录、恢复默认；**恢复出厂设置**（把当前数据目录移入回收站并重启） |
@@ -192,13 +199,17 @@ Profile，然后用**内存里的** `config` 指向它去跑真实动作，因�
 ```
 dsh-recovery/
   dsh-recovery.cmd        启动器（缺运行时先调 setup-runtime.cmd）
+  create-shortcut.cmd     在桌面创建带图标的快捷方式（可传自定义名称）
   setup-runtime.cmd       准备运行时的包装脚本
   setup-runtime.js        从已安装的 DeepSeek Harness 硬链接出 Electron 运行时
   app/
     main.js               Electron 主进程（窗口、IPC 注册、--self-check / --verify / --ui-check）
+    assets/               图标：icon.png（1024px，窗口用）+ icon.ico（16–256px 多尺寸，快捷方式用）
     preload.js            contextBridge：暴露 window.recovery.*
     backend/              零依赖后端（paths/profile/checkpoints/diagnostics/zip/launcher/asar/ipc/util/verify/restart-button）
     renderer/             原生 DOM 渲染界面（index.html / app.js / styles.css）
+  tools/
+    make-icon.py          重新生成 app/assets 下的 icon.png / icon.ico（Pillow）
   restart-button/         重启按钮补丁：lib/（asar + patch 库 + 载荷生成 + 命令行）、payload/、backup/、*.cmd
   .runtime/               生成的 Electron 运行时 + resources/app 目录联接 + userdata
                           以及 --ui-check 的截图（ui-restart-tab*.png，docs/ 里的图即由此导出）
@@ -226,6 +237,41 @@ dsh-recovery/
 - 自动扫描只找常见根目录下的一层子目录；装在别处需要用**诊断 → 安装位置**手动指定（见上）。
 
 ## 版本记录
+
+### 2026-10-26 · v1.1.0 · 收录插件页
+
+- 版本号 `1.0.0` → `1.1.0`（`app/package.json` 与 `restart-button/lib/patch.cjs` 的
+  `TOOL_VERSION` 同步；页签标题栏与「诊断 → 运行环境」读的就是这个值）。
+- 新增第九个页签「收录插件」：按
+  [contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md)
+  逐条核对插件仓库，生成可直接提交的 `data/plugins/<owner>__<repo>.yml`。
+- 引擎 `app/backend/awesome.js`：零依赖。18 条规则分成**自动判定**（manifest / 补丁 / 有效代码行 /
+  描述格式 / 分类 / 命名 / 图标 / 截图 / 条目数 / 聚合包 / peer 范围 / 依赖归属）、**联网判定**
+  （仓库年龄、`dsh-plugin` topic、维护状态）与**人工项**（描述与代码一致、源码可疑性）。
+  离线或 GitHub API 限流时降级为「未知」告警，绝不误判为失败。
+- 指定列表克隆后可查重并**原子写入**条目；同名但内容不同时**拒绝覆盖**，除非明确允许
+  （只用于更新自己那一条）。页签**只读**：不停止 DSH、不改 Profile、不建检查点。
+- 手册 [docs/awesome-plugin-submission.md](docs/awesome-plugin-submission.md)：给执行者（人或 AI）的
+  逐步流程、字段规则、常见退回原因与处置。
+- 修掉两个缺陷：`--ui-check` 原本在 `ready` promise 内部运行，而所有 IPC 通道都 `await ready`，
+  渲染器第一次 `status()` 调用会与检查互相等待（死锁），现改由 `whenReady` 在 `ready` 之后启动；
+  缺 `description.en` 时曾生成 `en: undefined` 的 YAML，现不生成条目并加回归用例。
+- 三项自检全过：`--self-check` ok、`--ui-check` ok（9 页签、0 问题）、`--verify` 68/68。
+
+### 2026-10-25 · 重装重启按钮补丁 + 桌面图标
+
+- 线上 `app.asar` 已回到官方 rc.3 原始字节（`04b32e3a…`），补丁在应用升级后丢失。
+  用恢复器 `restart-button\lib\apply.cjs apply` 重新写入两个条目，未改长度与偏移，
+  回读整包 sha256 回到补丁态 `f99c48fc…`（182434783 B 不变），页签显示「已安装 2/2」。
+- 新增恢复器自己的图标 `app/assets/icon.{png,ico}`（深色圆角方块 + 琥珀色重启环形箭头），
+  由 `tools/make-icon.py` 用 Pillow 生成：1024px PNG 给窗口/标题栏，
+  16–256px 多尺寸 ICO 给桌面快捷方式；32px 下仍可辨认。
+- `app/main.js` 给 `BrowserWindow` 设 `icon`（文件缺失时自动跳过，绝不因图标挡住启动）。
+  注意 `.runtime\dsh-recovery.exe` 是官方主程序的**硬链接**，改动它等于改官方安装，
+  所以图标只挂在窗口与快捷方式上。
+- `create-shortcut.cmd` 改为优先用 `app/assets/icon.ico`，并支持 `--no-pause`；
+  参数改为逐个解析（`%1` 为空时不再吞掉 `%2`）。桌面已创建「DSH 恢复模式」快捷方式。
+- 三项自检全过：`--self-check` ok、`--ui-check` ok（8 页签、0 问题）、`--verify` 54/54。
 
 ### 2026-10-24 · 适配 DSH 0.2.1-rc.3
 

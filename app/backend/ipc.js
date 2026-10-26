@@ -21,6 +21,7 @@ const launcher = require("./launcher");
 const diagnostics = require("./diagnostics");
 const restartButton = require("./restart-button");
 const updater = require("./plugin-updater");
+const awesome = require("./awesome");
 
 function isWithin(parent, child) {
   const relative = path.relative(parent, child);
@@ -42,6 +43,9 @@ class RecoveryController {
     this.lastRestartRun = undefined;
     this.state = undefined;
     this.busy = false;
+    // Last 收录插件 check result. Kept in memory only: it can be large (every
+    // finding plus the generated YAML) and is cheap to recompute.
+    this.awesome = undefined;
   }
 
   // -- persistence ---------------------------------------------------------
@@ -151,6 +155,10 @@ class RecoveryController {
       // remove path can hang, so the console offers the same operations against
       // the stopped profile. It is read-only unless a channel below is called.
       pluginUpdater: this.summarizeUpdater(selected, home),
+      // 收录插件: the entry rules are independent of the DSH install, so this
+      // section is pure data about the configured directories plus the last
+      // check. `gather()` must not fail because of it.
+      awesome: this.summarizeAwesome(),
       lastAction: this.lastAction,
       busy: this.busy,
     };
@@ -221,6 +229,31 @@ class RecoveryController {
     const dir = this.profileDir();
     if (!isDirectory(dir)) throw new Error(`Profile 目录不存在: ${dir}`);
     return dir;
+  }
+
+  /**
+   * 收录插件 (awesome-dsh-plugin submission) state.
+   *
+   * Everything here is a pure read of the configured directories, so a missing
+   * or half-cloned list is reported as data instead of breaking the console.
+   */
+  summarizeAwesome() {
+    const repoDir = typeof this.config.awesomeRepoDir === "string" ? this.config.awesomeRepoDir : undefined;
+    const listDir = typeof this.config.awesomeListDir === "string" ? this.config.awesomeListDir : undefined;
+    const list = listDir === undefined ? { ok: false, reason: "尚未指定列表仓库的本地克隆" } : awesome.inspectListDir(listDir);
+    return {
+      repoDir,
+      repoExists: repoDir !== undefined && isDirectory(repoDir),
+      repoGit: repoDir !== undefined && isDirectory(repoDir) ? { available: isDirectory(path.join(repoDir, ".git")) } : { available: false },
+      listDir,
+      list: list.ok === true ? { available: true, entries: list.entries } : { available: false, reason: list.reason },
+      categories: awesome.CATEGORIES,
+      rules: awesome.RULES,
+      limits: { maxEntriesPerPr: awesome.MAX_ENTRIES_PER_PR },
+      contributingUrl: awesome.CONTRIBUTING_URL,
+      newFileUrl: awesome.NEW_FILE_URL,
+      lastCheck: this.awesome,
+    };
   }
 
   requireUpdaterPnpm() {
@@ -364,6 +397,17 @@ class RecoveryController {
       case "recovery:open-path":
         return this.openPath(String(args[0] ?? ""));
 
+      // Documentation links in the 收录插件 panel: only https, only the
+      // hosts named in awesome.js's exported constants stay reachable, so a
+      // malformed entry cannot turn the button into an arbitrary launcher.
+      case "recovery:open-external": {
+        const url = String(args[0] ?? "");
+        if (!/^https:\/\/github\.com\/awesome-dsh-plugin\/awesome-dsh-plugin(?:\/|$)/u.test(url)) {
+          return { ok: false, error: `拒绝打开非列表站点的链接: ${url}`, state: this.state };
+        }
+        await shell.openExternal(url);
+        return { ok: true, result: { message: "已在浏览器中打开" }, state: this.state };
+      }
       case "recovery:show-item":
         return this.showItem(String(args[0] ?? ""));
 
@@ -477,6 +521,126 @@ class RecoveryController {
         });
         this.record(outcome.ok, outcome.message, outcome);
         return { ok: outcome.ok, result: { message: outcome.message, updater: outcome }, state: this.state };
+      }
+
+      case "recovery:awesome-set-dir": {
+        const which = String(args[0] ?? "");
+        const raw = String(args[1] ?? "").trim();
+        const options = args[2] !== null && typeof args[2] === "object" ? args[2] : {};
+        // `persist: false` keeps the change in memory only; `--verify` uses it
+        // so the real config file stays byte-identical.
+        const persist = options.persist !== false;
+        if (which !== "repo" && which !== "list") return { ok: false, error: `未知目录类型: ${which}`, state: this.state };
+        if (raw === "") return { ok: false, error: "目录不能为空", state: this.state };
+        const dir = path.resolve(raw);
+        if (!isDirectory(dir)) return { ok: false, error: `目录不存在: ${dir}`, state: this.state };
+        if (which === "list") {
+          const list = awesome.inspectListDir(dir);
+          if (list.ok !== true) return { ok: false, error: list.reason, state: this.state };
+          const patch = { awesomeListDir: dir };
+          if (persist) this.persist(patch);
+          else this.config = { ...this.config, ...patch };
+          if (persist) this.record(true, `已指定列表仓库克隆：${dir}`);
+          return { ok: true, result: { message: `已指定列表仓库克隆（${list.entries} 个条目）`, dir }, state: await this.refresh({ sizes: false }) };
+        }
+        const patch = { awesomeRepoDir: dir };
+        if (persist) this.persist(patch);
+        else this.config = { ...this.config, ...patch };
+        if (persist) this.record(true, `已指定插件仓库：${dir}`);
+        return { ok: true, result: { message: `已指定插件仓库：${dir}`, dir }, state: await this.refresh({ sizes: false }) };
+      }
+
+      case "recovery:awesome-choose-dir": {
+        // Folder picker for the two paths above; the write itself goes through
+        // awesome-set-dir so the validation lives in exactly one place.
+        const which = String(args[0] ?? "");
+        if (which !== "repo" && which !== "list") return { ok: false, error: `未知目录类型: ${which}`, state: this.state };
+        const current = which === "list" ? this.config.awesomeListDir : this.config.awesomeRepoDir;
+        const picked = await dialog.showOpenDialog({
+          title: which === "list" ? "选择 awesome-dsh-plugin 的本地克隆" : "选择插件仓库目录",
+          defaultPath: typeof current === "string" ? current : undefined,
+          properties: ["openDirectory"],
+        });
+        if (picked.canceled === true || picked.filePaths.length === 0) return { ok: false, canceled: true, state: this.state };
+        return this.dispatch("recovery:awesome-set-dir", [which, picked.filePaths[0]]);
+      }
+
+      case "recovery:copy-text": {
+        const text = String(args[0] ?? "");
+        if (text === "") return { ok: false, error: "没有要复制的内容", state: this.state };
+        const { clipboard } = require("electron");
+        clipboard.writeText(text);
+        return { ok: true, result: { message: "已复制到剪贴板" }, state: this.state };
+      }
+
+      case "recovery:awesome-forget-dir": {
+        const which = String(args[0] ?? "");
+        if (which !== "repo" && which !== "list") return { ok: false, error: `未知目录类型: ${which}`, state: this.state };
+        this.persist(which === "list" ? { awesomeListDir: null } : { awesomeRepoDir: null });
+        this.record(true, which === "list" ? "已清除列表仓库路径" : "已清除插件仓库路径");
+        return { ok: true, state: await this.refresh({ sizes: false }) };
+      }
+
+      case "recovery:awesome-check": {
+        const options = args[0] !== null && typeof args[0] === "object" ? args[0] : {};
+        const dir = typeof options.dir === "string" && options.dir !== "" ? options.dir : this.config.awesomeRepoDir;
+        if (typeof dir !== "string" || dir === "") {
+          return { ok: false, error: "还没有指定要收录的插件仓库目录", state: this.state };
+        }
+        // A listing is a read-only operation: it must work while DSH runs and
+        // must never create a checkpoint.
+        const outcome = await awesome.check({
+          dir,
+          repo: typeof options.repo === "string" && options.repo.trim() !== "" ? options.repo.trim() : undefined,
+          ref: typeof options.ref === "string" && options.ref.trim() !== "" ? options.ref.trim() : undefined,
+          category: typeof options.category === "string" && options.category !== "" ? options.category : undefined,
+          descriptionEn: typeof options.descriptionEn === "string" ? options.descriptionEn : undefined,
+          descriptionZh: typeof options.descriptionZh === "string" ? options.descriptionZh : undefined,
+          icon: typeof options.icon === "string" ? options.icon : undefined,
+          tarball: typeof options.tarball === "string" ? options.tarball : undefined,
+          countInPr: Number.isFinite(options.countInPr) ? options.countInPr : 1,
+          listDir: this.config.awesomeListDir ?? undefined,
+          online: true,
+        });
+        this.awesome = { ...outcome, checkedAt: new Date().toISOString(), checkedLabel: formatLocalTime(new Date()) };
+        this.record(outcome.ok === true, outcome.ok === true ? `收录检查通过：${outcome.fileName}` : `收录检查未通过：${outcome.counts.fail} 项`);
+        return {
+          ok: outcome.ok === true,
+          result: {
+            message:
+              outcome.ok === true
+                ? `收录检查通过${outcome.counts.warn === 0 ? "" : `（${outcome.counts.warn} 项需人工确认）`}`
+                : `收录检查未通过：${outcome.counts.fail} 项必须修正`,
+          },
+          awesome: this.awesome,
+          state: await this.refresh({ sizes: false }),
+        };
+      }
+
+      case "recovery:awesome-write": {
+        const options = args[0] !== null && typeof args[0] === "object" ? args[0] : {};
+        const check = this.awesome;
+        if (check === undefined || typeof check.yaml !== "string" || typeof check.fileName !== "string") {
+          return { ok: false, error: "还没有可写入的条目：请先执行检查", state: this.state };
+        }
+        if (check.ok !== true) {
+          return { ok: false, error: "检查未通过，不能写入条目。请先修正标记为失败的项。", state: this.state };
+        }
+        if (typeof this.config.awesomeListDir !== "string" || this.config.awesomeListDir === "") {
+          return { ok: false, error: "还没有指定列表仓库的本地克隆", state: this.state };
+        }
+        const written = awesome.writeEntry({
+          listDir: this.config.awesomeListDir,
+          yaml: check.yaml,
+          fileName: check.fileName,
+          allowUpdate: options.allowUpdate === true,
+        });
+        if (written.ok !== true) {
+          this.record(false, `写入条目失败: ${written.error}`);
+          return { ok: false, error: written.error, state: await this.refresh({ sizes: false }) };
+        }
+        this.record(true, written.message, written);
+        return { ok: true, result: { ...written, message: written.message }, state: await this.refresh({ sizes: false }) };
       }
 
       case "recovery:quit":

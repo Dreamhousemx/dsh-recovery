@@ -8,6 +8,13 @@
 
 const api = window.recovery;
 
+// A render exception used to leave a blank window with no trace. Record the
+// message on `window` so `--ui-check` can report it instead of an opaque
+// "Script failed to execute".
+window.addEventListener("error", (event) => {
+  window.__renderError = `${event.message} (${event.filename}:${event.lineno})`;
+});
+
 const TABS = [
   { id: "quick", label: "快速恢复" },
   { id: "plugins", label: "插件管理", badge: (value) => value.selectedProfileDetail?.plugins?.length },
@@ -25,6 +32,17 @@ const TABS = [
     },
   },
   { id: "checkpoints", label: "回滚", badge: (value) => value.checkpoints.length },
+  {
+    id: "awesome",
+    label: "收录插件",
+    // The badge reflects the last check only, so an untouched panel stays quiet.
+    badge: (value) => {
+      const check = value.awesome?.lastCheck;
+      if (check === undefined) return undefined;
+      if (check.ok !== true) return "!";
+      return check.counts?.warn > 0 ? check.counts.warn : undefined;
+    },
+  },
   {
     id: "restart",
     label: "重启按钮",
@@ -89,7 +107,9 @@ function button(label, action, arg, options = {}) {
 }
 
 function select(name, value, options) {
-  const node = el("select", { class: "select", dataset: { select: name }, disabled: busy });
+  // `id` mirrors the field name so `valueOf()` can read any control back out of
+  // the rendered panel, whatever kind it is.
+  const node = el("select", { class: "select", id: name, dataset: { select: name }, disabled: busy });
   for (const option of options) {
     node.append(
       el("option", {
@@ -370,6 +390,77 @@ const ACTIONS = {
     await run(`升级 ${arg}`, "pluginUpdate", arg, false);
   },
   "plugin-check": (arg) => run(`检查 ${arg}`, "pluginCheck", arg),
+
+  // --- 收录插件 ----------------------------------------------------------
+  "awesome-choose-repo": () => run("选择插件仓库目录", "awesomeChooseDir", "repo"),
+  "awesome-choose-list": () => run("选择列表仓库克隆", "awesomeChooseDir", "list"),
+  "awesome-forget-repo": () => run("清除插件仓库路径", "awesomeForgetDir", "repo"),
+  "awesome-forget-list": () => run("清除列表仓库路径", "awesomeForgetDir", "list"),
+  "awesome-check": async () => {
+    const dirInput = document.getElementById("awesome-repo-input");
+    const dir = typeof dirInput?.value === "string" && dirInput.value.trim() !== "" ? dirInput.value.trim() : state.awesome?.repoDir;
+    if (typeof dir !== "string" || dir.trim() === "") {
+      toast("请先指定要收录的插件仓库目录", "error");
+      return;
+    }
+    // A directory typed into the box but never confirmed still needs to reach
+    // the backend, so it is set first and validated there.
+    if (dir !== state.awesome?.repoDir) {
+      const set = await api.awesomeSetDir("repo", dir);
+      if (set?.ok === false) {
+        toast(set.error ?? "目录无效", "error");
+        return;
+      }
+      absorb(set);
+    }
+    // Every field is re-read from the panel, so the check always describes what
+    // is on screen rather than a stale last result.
+    const options = {
+      dir: dir.trim(),
+      repo: valueOf("awesome-ref-input"),
+      category: valueOf("awesome-category-input"),
+      descriptionEn: valueOf("awesome-en-input"),
+      descriptionZh: valueOf("awesome-zh-input"),
+      icon: valueOf("awesome-icon-input"),
+      tarball: valueOf("awesome-tarball-input"),
+      ref: valueOf("awesome-ref-branch-input"),
+    };
+    const response = await run("检查收录条件", "awesomeCheck", options);
+    if (response?.awesome?.ok === false) toast(`检查未通过：${response.awesome.counts.fail} 项必须修正`, "error");
+  },
+  "awesome-copy": async () => {
+    const yaml = state.awesome?.lastCheck?.yaml;
+    if (typeof yaml !== "string") {
+      toast("还没有生成条目", "error");
+      return;
+    }
+    await copyText(yaml, "条目 YAML 已复制");
+  },
+  "awesome-copy-pr": async () => {
+    const body = state.awesome?.lastCheck?.prBody;
+    if (typeof body !== "string") {
+      toast("还没有生成 PR 说明", "error");
+      return;
+    }
+    await copyText(body, "PR 说明已复制");
+  },
+  "awesome-write": async () => {
+    const check = state.awesome?.lastCheck;
+    if (check?.ok !== true) {
+      toast("检查未通过，不能写入", "error");
+      return;
+    }
+    if (!confirm(`把条目写入列表克隆？\n\n文件：data/plugins/${check.fileName}\n\n只会新增或更新这一个文件，不会碰别人的条目。`)) return;
+    await run("写入条目", "awesomeWrite", {});
+  },
+  "awesome-open-contributing": () => run("打开 contributing.md", "openExternal", state.awesome?.contributingUrl),
+  "awesome-open-new": () => {
+    const file = state.awesome?.lastCheck?.fileName;
+    const base = state.awesome?.newFileUrl;
+    if (typeof base !== "string") return;
+    return run("打开 GitHub", "openExternal", file === undefined ? base : `${base}?filename=${encodeURIComponent(file)}`);
+  },
+
   "set-target": (arg) => run("切换目标应用", "setTarget", arg),
   "choose-target": () => run("选择安装位置", "chooseTarget"),
   "choose-target-exe": () => run("选择应用主程序", "chooseTarget", "exe"),
@@ -472,6 +563,7 @@ function renderPanels() {
   host.append(panel("quick", renderQuick()));
   host.append(panel("plugins", renderPlugins()));
   host.append(panel("updater", renderUpdater()));
+  host.append(panel("awesome", renderAwesome()));
   host.append(panel("checkpoints", renderCheckpoints()));
   host.append(panel("restart", renderRestartButton()));
   host.append(panel("profiles", renderProfiles()));
@@ -904,6 +996,354 @@ function renderUpdater() {
   }
 
   return nodes.filter((node) => node !== undefined);
+}
+
+// --- panel: 收录插件 (awesome-dsh-plugin submission) ----------------------
+
+function renderAwesome() {
+  const info = state.awesome;
+  if (info === undefined) return [hint("收录插件数据尚未读取，请点「刷新」。")];
+
+  const check = info.lastCheck;
+  const listReady = info.list?.available === true;
+  const dirReady = info.repoExists === true;
+
+  const nodes = [
+    hint(
+      "按 awesome-dsh-plugin 的 contributing.md 逐条核对一个插件仓库，生成可直接提交的 data/plugins/<owner>__<repo>.yml，" +
+        "并（在指定了列表克隆时）把它写进克隆。检查只读，不需要停止 DSH。",
+    ),
+    card({
+      icon: "📥",
+      title: "收录到 awesome-dsh-plugin",
+      desc: "一个插件一条：目录文件永不冲突，两个 README 由脚本生成，不要手改。",
+      tags: [
+        chip(listReady ? `列表克隆 ${info.list.entries} 条` : "未指定列表克隆", listReady ? "ok" : "warn"),
+        chip(dirReady ? "已指定插件仓库" : "未指定插件仓库", dirReady ? "ok" : "warn"),
+      ],
+      body: [
+        el("div", { class: "field-row" }, [
+          el("input", {
+            class: "input",
+            type: "text",
+            id: "awesome-repo-input",
+            placeholder: "插件仓库目录，例如 D:\\Workspace\\DeepSeek Harness\\my-plugin",
+            spellcheck: "false",
+            value: info.repoDir ?? "",
+          }),
+          button("选择目录…", "awesome-choose-repo", undefined, { className: "btn--primary" }),
+          info.repoDir === undefined ? undefined : button("清除", "awesome-forget-repo", undefined, { className: "btn--ghost" }),
+        ]),
+        el("div", { class: "field-row" }, [
+          el("input", {
+            class: "input",
+            type: "text",
+            id: "awesome-list-input",
+            placeholder: "awesome-dsh-plugin 的本地克隆（可选：启用重复检查与写入）",
+            spellcheck: "false",
+            value: info.listDir ?? "",
+          }),
+          button("选择克隆…", "awesome-choose-list", undefined, { className: "btn--ghost" }),
+          info.listDir === undefined ? undefined : button("清除", "awesome-forget-list", undefined, { className: "btn--ghost" }),
+        ]),
+        hint(
+          listReady
+            ? "列表克隆可用：会做重复检查，并允许把条目直接写进 data/plugins/。"
+            : info.list === undefined || info.list.available === true
+              ? "没有列表克隆也能检查，只是跳过重复核对、不能写入。"
+              : `列表克隆不可用：${info.list.reason ?? "未知原因"}`,
+        ),
+      ],
+      actions: [
+        button("检查并生成条目", "awesome-check", undefined, { className: "btn--primary", disabled: !dirReady }),
+        button(check === undefined ? "复制条目 YAML" : "重新复制 YAML", "awesome-copy", undefined, {
+          className: "btn--ghost",
+          disabled: check?.yaml === undefined,
+        }),
+        button("写入列表克隆", "awesome-write", undefined, { className: "btn--primary", disabled: !listReady || check?.ok !== true }),
+      ],
+    }),
+  ];
+
+  if (check !== undefined) {
+    nodes.push(...renderAwesomeResult(info, check));
+  } else {
+    nodes.push(
+      card({
+        title: "尚未检查",
+        desc: dirReady
+          ? "点「检查并生成条目」开始。检查会读取仓库清单、补丁、源码、图标与截图声明，并（联网时）核对仓库年龄与 topic。"
+          : "先指定要收录的插件仓库目录，再执行检查。",
+      }),
+    );
+  }
+
+  nodes.push(renderAwesomeFields(info, check));
+
+  nodes.push(
+    card({
+      title: "规则与限制",
+      desc: "取自 contributing.md。列表收插件、不收纯聚合包；一个 PR 最多 3 条。",
+      body: list(
+        Object.entries(info.rules ?? {}).map(([id, title]) =>
+          row({
+            name: title,
+            sub: RULE_NOTES[id],
+            side: [],
+          }),
+        ),
+      ),
+      actions: [],
+      actionsEnd: true,
+    }),
+  );
+
+  return nodes;
+}
+
+// One-line reminders for the rules a human (or an AI) is most likely to get wrong.
+const RULE_NOTES = {
+  singleFile: "只新增 data/plugins/<owner>__<repo>.yml；README 自动生成",
+  bundle: "package.json 必须声明 dsh.bundle；只有 dsh.client 无法安装",
+  patch: "dsh.bundle.patch 指向的 cordis.patch.yml 必须存在并真的 insert",
+  code: "占位、空壳、纯 README 仓库不收",
+  age: "仓库创建满 1 天（CI 自动检查）",
+  topic: "仓库要加 dsh-plugin topic",
+  description: "单行、以句号结尾、只说功能；含「: 」要加引号",
+  category: "选贴合实际行为的分类；选不准维护者会改，不会打回",
+  naming: "文件名 owner__repo.yml；monorepo 用 owner__repo--路径.yml",
+  icon: "仅 GitHub 托管的 png/jpg/webp；SVG 与第三方图床被拒",
+  screenshots: "1-8 张，写在插件仓库的 screenshots.json 里",
+  count: "一个 PR 最多 3 条，超过 CI 直接拒",
+  duplicate: "先到者保留位置，但更好的一方可以取代",
+  meta: "纯聚合包不单独收录：收插件，不收聚合包",
+  upstream: "聚合包依赖必须指回原作者，不能依赖自己转存的副本",
+  peer: "官方 @deepseek-ai/* 用 peerDependencies，范围要带预发布分支",
+  readme: "不要手工编辑生成的 README",
+  maintained: "停止维护、归档、长期停更的条目会被移除",
+};
+
+function renderAwesomeResult(info, check) {
+  const nodes = [];
+  const verdictChip =
+    check.ok === true
+      ? chip(check.counts?.warn > 0 ? `通过（${check.counts.warn} 项需确认）` : "通过", "ok")
+      : chip(`${check.counts?.fail ?? 0} 项必须修正`, "danger");
+
+  nodes.push(
+    card({
+      icon: check.ok === true ? "✅" : "⛔",
+      title: "检查结果",
+      desc: check.checkedLabel === undefined ? undefined : `检查于 ${check.checkedLabel}`,
+      tags: [verdictChip, chip(`${check.counts?.ok ?? 0} 项通过`, "mono")],
+      body: [
+        metrics([
+          ["条目文件", check.fileName ?? "—", true],
+          ["分类", check.category ?? "—"],
+          ["仓库", check.identity?.owner === undefined ? "—" : `${check.identity.owner}/${check.identity.repo}`],
+          ["源码", check.code === undefined ? "—" : `${check.code.count} 个文件`],
+        ]),
+        check.git?.remote === undefined ? undefined : hint(`git remote：${check.git.remote}${check.git.lastCommit === undefined ? "" : ` · 最近提交 ${check.git.lastCommit.slice(0, 10)}`}`),
+      ],
+    }),
+  );
+
+  const fails = check.findings.filter((item) => item.level === "fail");
+  const warns = check.findings.filter((item) => item.level === "warn");
+  const oks = check.findings.filter((item) => item.level === "ok");
+
+  if (fails.length > 0) {
+    nodes.push(
+      card({
+        danger: true,
+        title: "必须修正",
+        desc: "这些项会让 PR 被拒或让条目名不副实。修好后重新检查。",
+        body: list(fails.map(findingRow)),
+      }),
+    );
+  }
+  if (warns.length > 0) {
+    nodes.push(
+      card({
+        title: "需要人工确认",
+        desc: "检查器无法自动判定，或依赖网络信息。提交前请逐条看过。",
+        body: list(warns.map(findingRow)),
+      }),
+    );
+  }
+
+  if (check.manualChecklist?.length > 0) {
+    nodes.push(
+      card({
+        title: "评审会看什么",
+        desc: "CI 通过只是前置条件；维护者会实际读仓库。以下几条必须人工完成。",
+        body: list(
+          check.manualChecklist.map((item) =>
+            row({
+              name: item.text,
+              muted: true,
+              sub: item.detail.length === 0 ? undefined : `相关声明：${item.detail.join("、")}`,
+            }),
+          ),
+        ),
+      }),
+    );
+  }
+
+  if (check.yaml !== undefined) {
+    nodes.push(
+      card({
+        title: `条目文件 data/plugins/${check.fileName}`,
+        desc: "直接提交这一个文件即可；两个 README 会在合并后自动重新生成。",
+        body: el("pre", { class: "code-block", text: check.yaml }),
+        actions: [
+          button("复制 YAML", "awesome-copy", undefined, { className: "btn--primary" }),
+          check.prBody === undefined ? undefined : button("复制 PR 说明", "awesome-copy-pr", undefined, { className: "btn--ghost" }),
+          info.list?.available === true && info.lastCheck?.ok === true
+            ? button("写入列表克隆", "awesome-write", undefined, { className: "btn--primary" })
+            : undefined,
+        ],
+      }),
+    );
+  }
+
+  if (oks.length > 0) {
+    nodes.push(
+      card({
+        title: "已通过的检查",
+        desc: "记录实际读到的内容，便于复核。",
+        body: list(oks.map((item) => row({ name: `${item.rule} · ${item.title}`, sub: item.detail, muted: true }))),
+      }),
+    );
+  }
+
+  if (check.screenshots?.present === true) {
+    nodes.push(
+      card({
+        title: "截图声明",
+        desc: "来自插件仓库的 screenshots.json（市场详情页按它展示）。",
+        body: list(check.screenshots.images.map((image) => row({ name: image, mono: true }))),
+      }),
+    );
+  }
+
+  nodes.push(
+    card({
+      title: "提交",
+      desc: "分支 → 提交 → 推送 → 开 PR。反馈会以 PR 评论指出要改什么。",
+      body: hint(
+        `git checkout -b add-${(check.identity?.repo ?? "plugin").replace(/[^A-Za-z0-9._-]/gu, "-")} && ` +
+          `git add data/plugins/${check.fileName ?? "<file>"} && git commit -m "Add ${check.entry?.name ?? "plugin"}"`,
+      ),
+      actions: [
+        button("打开 contributing.md", "awesome-open-contributing", undefined, { className: "btn--ghost" }),
+        button("在 GitHub 新建条目文件", "awesome-open-new", undefined, { className: "btn--ghost" }),
+      ],
+    }),
+  );
+
+  return nodes;
+}
+
+function findingRow(item) {
+  return row({
+    name: `${item.rule} · ${item.title}`,
+    sub: item.fix === undefined ? item.detail : `${item.detail}\n修法：${item.fix}`,
+    side: [chip(item.level === "fail" ? "必须修正" : "待确认", item.level === "fail" ? "danger" : "warn")],
+  });
+}
+
+/** The entry fields a human supplies; everything else is derived from the repo. */
+function renderAwesomeFields(info, check) {
+  const entry = check?.entry;
+  const categories = info.categories ?? [];
+  return card({
+    title: "条目字段",
+    desc: "只有 description.en 是必填的；分类留空会按仓库内容推断，中文描述留空由维护者补。",
+    body: [
+      el("div", { class: "field-grid" }, [
+        el("label", { class: "field" }, [
+          el("span", { class: "field__label", text: "仓库地址（可选：仓库没有远端时用 owner/repo）" }),
+          el("input", { class: "input", type: "text", id: "awesome-ref-input", placeholder: "owner/repo 或 GitHub 链接", spellcheck: "false" }),
+        ]),
+        el("label", { class: "field" }, [
+          el("span", { class: "field__label", text: "monorepo 分支（可选，默认 main 或当前分支）" }),
+          el("input", { class: "input", type: "text", id: "awesome-ref-branch-input", placeholder: "main", spellcheck: "false" }),
+        ]),
+        el("label", { class: "field" }, [
+          el("span", { class: "field__label", text: "分类" }),
+          select("awesome-category-input", entry?.category ?? check?.category ?? "", [
+            { value: "", label: "（按仓库内容推断）" },
+            ...categories.map((category) => ({ value: category, label: category })),
+          ]),
+        ]),
+        el("label", { class: "field" }, [
+          el("span", { class: "field__label", text: "英文描述（必填，单行，以句号结尾）" }),
+          el("input", {
+            class: "input",
+            type: "text",
+            id: "awesome-en-input",
+            placeholder: "One-line description ending with a period.",
+            spellcheck: "false",
+            value: entry?.description?.en ?? "",
+          }),
+        ]),
+        el("label", { class: "field" }, [
+          el("span", { class: "field__label", text: "中文描述（可选）" }),
+          el("input", {
+            class: "input",
+            type: "text",
+            id: "awesome-zh-input",
+            placeholder: "一句话描述，以句号结尾。",
+            spellcheck: "false",
+            value: entry?.description?.zh ?? "",
+          }),
+        ]),
+        el("label", { class: "field" }, [
+          el("span", { class: "field__label", text: "图标 URL（可选，GitHub 托管的 png/jpg/webp）" }),
+          el("input", {
+            class: "input",
+            type: "text",
+            id: "awesome-icon-input",
+            placeholder: "https://raw.githubusercontent.com/owner/repo/main/assets/icon-180.png",
+            spellcheck: "false",
+            value: entry?.icon ?? "",
+          }),
+        ]),
+        el("label", { class: "field" }, [
+          el("span", { class: "field__label", text: "预构建 tarball（可选，GitHub Release 上的 .tgz）" }),
+          el("input", {
+            class: "input",
+            type: "text",
+            id: "awesome-tarball-input",
+            placeholder: "https://github.com/owner/repo/releases/latest/download/plugin.tgz",
+            spellcheck: "false",
+            value: entry?.tarball ?? "",
+          }),
+        ]),
+      ]),
+      hint("填完后点上面的「检查并生成条目」。检查会读这些字段，并重新生成 YAML。"),
+    ],
+  });
+}
+
+/** Read a text/select field out of the panel current render. */
+function valueOf(id) {
+  const node = document.getElementById(id);
+  if (node === null) return undefined;
+  const value = typeof node.value === "string" ? node.value.trim() : "";
+  return value === "" ? undefined : value;
+}
+
+/** Copy through the main process: the renderer runs with contextIsolation on. */
+async function copyText(text, message) {
+  try {
+    const response = await api.copyText(text);
+    if (response?.ok === false) toast(response.error ?? "复制失败", "error");
+    else toast(message, "ok");
+  } catch (error) {
+    toast(error instanceof Error ? error.message : String(error), "error");
+  }
 }
 
 // --- panel: rollback ------------------------------------------------------

@@ -19,6 +19,10 @@ const { runVerify } = require("./backend/verify");
 // AppData, so removing the folder removes every trace of it.
 app.setPath("userData", path.join(PROJECT_ROOT, ".runtime", "userdata"));
 
+// Window/taskbar icon lives next to the backend so `app\` stays self-contained.
+// A missing icon must never stop the console from opening.
+const ICON_PATH = path.join(__dirname, "assets", "icon.png");
+
 const CHANNELS = [
   "recovery:status",
   "recovery:refresh",
@@ -57,6 +61,13 @@ const CHANNELS = [
   "recovery:plugin-update",
   "recovery:plugin-remove",
   "recovery:plugin-check",
+  "recovery:open-external",
+  "recovery:awesome-choose-dir",
+  "recovery:awesome-set-dir",
+  "recovery:copy-text",
+  "recovery:awesome-forget-dir",
+  "recovery:awesome-check",
+  "recovery:awesome-write",
   "recovery:launch",
   "recovery:stop",
   "recovery:restart",
@@ -111,19 +122,37 @@ async function waitForWindow(timeoutMs) {
 async function runUiCheck({ shot }) {
   const issues = [];
   const win = await waitForWindow(20000);
+  // A renderer exception surfaces as an opaque "Script failed to execute", so
+  // every console message is collected and reported alongside the issues.
+  const consoleMessages = [];
+  win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    consoleMessages.push({ level, message, line, sourceId });
+    // Renderer errors must reach the terminal: an opaque "Script failed to
+    // execute" without the message cannot be acted on.
+    if (String(level) === "3" || String(level) === "error") process.stderr.write(`renderer: ${message} (${sourceId}:${line})\n`);
+  });
   // app.js waits for `api.status()` before its first render; give it a moment.
   await sleep(900);
 
-  const before = await win.webContents.executeJavaScript(
-    "({ tabs: [...document.querySelectorAll('#tabs [data-action=\"tab\"]')].map((node) => node.textContent), bridge: Object.keys(window.recovery ?? {}), panelCount: document.querySelectorAll('.panel').length, active: document.querySelector('.panel[data-active=\"true\"]')?.dataset.panel ?? null })",
-  );
-  // Eight panels: the plugin updater joined the original seven so that the two
-  // in-app update defects (a stalled HMR queue, and the market refusing to
-  // update itself) have a path that works with the app stopped.
-  if (before.tabs.length !== 8) issues.push(`页签数量为 ${before.tabs.length}，期望 8`);
+  let before;
+  try {
+    before = await win.webContents.executeJavaScript(
+      "({ tabs: [...document.querySelectorAll('#tabs [data-action=\"tab\"]')].map((node) => node.textContent), bridge: Object.keys(window.recovery ?? {}), panelCount: document.querySelectorAll('.panel').length, active: document.querySelector('.panel[data-active=\"true\"]')?.dataset.panel ?? null, error: window.__renderError ?? null })",
+    );
+  } catch (error) {
+    throw new Error(`读取页面失败：${error instanceof Error ? error.message : String(error)}；控制台：${JSON.stringify(consoleMessages.slice(-8))}`);
+  }
+  if (typeof before.error === "string") {
+    throw new Error(`渲染失败：${before.error}；控制台：${JSON.stringify(consoleMessages.slice(-8))}`);
+  }
+  // Nine panels: 收录插件 joined the eight so that adding a plugin to
+  // awesome-dsh-plugin becomes a checked, guided operation instead of manual
+  // YAML editing.
+  if (before.tabs.length !== 9) issues.push(`页签数量为 ${before.tabs.length}，期望 9`);
   if (!before.tabs.some((label) => label.includes("重启按钮"))) issues.push("页签中没有「重启按钮」");
   if (!before.tabs.some((label) => label.includes("插件更新"))) issues.push("页签中没有「插件更新」");
-  if (before.panelCount !== 8) issues.push(`面板数量为 ${before.panelCount}，期望 8`);
+  if (!before.tabs.some((label) => label.includes("收录插件"))) issues.push("页签中没有「收录插件」");
+  if (before.panelCount !== 9) issues.push(`面板数量为 ${before.panelCount}，期望 9`);
   for (const method of [
     "restartButtonApply",
     "restartButtonRevert",
@@ -138,6 +167,12 @@ async function runUiCheck({ shot }) {
     "pluginInstall",
     "pluginUpdate",
     "pluginCheck",
+    "awesomeSetDir",
+    "awesomeForgetDir",
+    "awesomeCheck",
+    "awesomeWrite",
+    "copyText",
+    "openExternal",
   ]) {
     if (!before.bridge.includes(method)) issues.push(`preload 桥缺少 ${method}`);
   }
@@ -170,6 +205,20 @@ async function runUiCheck({ shot }) {
     }
   }
 
+  // 收录插件 must open with its rules visible and its one primary action
+  // reachable, even before any directory is configured.
+  const awesomePanel = await win.webContents.executeJavaScript(`${panelProbe}("awesome")`);
+  if (awesomePanel === null) issues.push("找不到「收录插件」面板");
+  else {
+    for (const action of ["awesome-check", "awesome-choose-repo", "awesome-choose-list"]) {
+      if (!awesomePanel.actions.some((button) => button.action === action)) issues.push(`收录插件面板缺少按钮 ${action}`);
+    }
+    const checkButton = awesomePanel.actions.find((button) => button.action === "awesome-check");
+    if (checkButton?.disabled !== true) issues.push("没有指定仓库时「检查并生成条目」应当禁用");
+    if (!awesomePanel.text.includes("dsh.bundle")) issues.push("收录插件面板没有列出 dsh.bundle 规则");
+    if (!awesomePanel.text.includes("收录到 awesome-dsh-plugin")) issues.push("收录插件面板缺少主卡片");
+  }
+
   // Pointing the console at an install that auto-detection missed must be
   // reachable from the diagnostics panel even when only one install is known.
   const diagnosticsPanel = await win.webContents.executeJavaScript(`${panelProbe}("diagnostics")`);
@@ -186,7 +235,7 @@ async function runUiCheck({ shot }) {
   // Capture each panel that gained a one-click button (plus the overview
   // panel), so a ui-check run also leaves visual evidence for those screens.
   const extraShots = {};
-  for (const [panelId, suffix] of [["quick", "quick"], ["plugins", "plugins"], ["updater", "updater"], ["checkpoints", "checkpoints"], ["diagnostics", "diagnostics"]]) {
+  for (const [panelId, suffix] of [["quick", "quick"], ["plugins", "plugins"], ["updater", "updater"], ["awesome", "awesome"], ["checkpoints", "checkpoints"], ["diagnostics", "diagnostics"]]) {
     await win.webContents.executeJavaScript(`document.querySelector('[data-action="tab"][data-arg="${panelId}"]').click()`);
     await sleep(400);
     const file = shot.replace(/\.png$/i, `-${suffix}.png`);
@@ -234,6 +283,7 @@ async function runUiCheck({ shot }) {
       checkpoints: checkpointsPanel?.actions.filter((button) => button.action === "delete-all-checkpoints") ?? [],
     },
     updater: updaterPanel === null ? null : { actions: updaterPanel.actions, text: updaterPanel.text.slice(0, 400) },
+    awesome: awesomePanel === null ? null : { actions: awesomePanel.actions, text: awesomePanel.text.slice(0, 400) },
     extraShots,
     shot,
     shotBytes: fs.statSync(shot).size,
@@ -303,6 +353,7 @@ function createWindow() {
     backgroundColor: "#f4f4f6",
     autoHideMenuBar: true,
     title: "DSH 恢复器",
+    ...(fs.existsSync(ICON_PATH) ? { icon: ICON_PATH } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -385,19 +436,27 @@ const ready = (async () => {
     return;
   }
   if (uiCheck) {
-    const shot = argvValue("--ui-shot=") ?? path.join(PROJECT_ROOT, ".runtime", "ui-restart-tab.png");
-    try {
-      const outcome = await runUiCheck({ shot });
-      process.stdout.write(`${JSON.stringify(outcome, undefined, 2)}\n`);
-      process.stdout.write(outcome.issues.length === 0 ? "ui-check: ok\n" : `ui-check: ${outcome.issues.length} problem(s)\n`);
-      app.exit(outcome.issues.length === 0 ? 0 : 1);
-    } catch (error) {
-      process.stderr.write(`ui-check: 未捕获异常 ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
-      app.exit(2);
-    }
+    // `--ui-check` must NOT run inside this promise: every IPC handler awaits
+    // `ready`, so the renderer's first `status()` call would deadlock against
+    // the check that is waiting for the renderer. It is started by the
+    // whenReady block below instead, after `ready` has resolved.
     return;
   }
 })();
+
+/** Drives the already-rendered window and reports; only `--ui-check` calls this. */
+async function startUiCheck() {
+  const shot = argvValue("--ui-shot=") ?? path.join(PROJECT_ROOT, ".runtime", "ui-restart-tab.png");
+  try {
+    const outcome = await runUiCheck({ shot });
+    process.stdout.write(`${JSON.stringify(outcome, undefined, 2)}\n`);
+    process.stdout.write(outcome.issues.length === 0 ? "ui-check: ok\n" : `ui-check: ${outcome.issues.length} problem(s)\n`);
+    app.exit(outcome.issues.length === 0 ? 0 : 1);
+  } catch (error) {
+    process.stderr.write(`ui-check: 未捕获异常 ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
+    app.exit(2);
+  }
+}
 
 function registerChannels() {
   for (const channel of CHANNELS) {
@@ -429,9 +488,17 @@ if (!headless && !uiCheck && !app.requestSingleInstanceLock()) {
 
   registerChannels();
 
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     if (headless) return;
+    // The AppUserModelID must be set before the window exists so Windows groups
+    // the window, its taskbar entry and the Start-menu shortcut together.
     app.setAppUserModelId("dev.dsh.recovery");
     createWindow();
+    if (uiCheck) {
+      // `ready` resolved before the window existed, so the renderer can now
+      // call the IPC channels the check drives.
+      await ready;
+      await startUiCheck();
+    }
   });
 }

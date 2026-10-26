@@ -297,10 +297,20 @@ const DEFAULT_CONFIG = {
   profileName: null,
   targets: [],
   maxCheckpoints: 20,
+  // 收录插件 (awesome-dsh-plugin submissions): the last used repository and,
+  // optionally, a clone of the list itself so duplicate checks and the entry
+  // file write can run locally.
+  awesomeRepoDir: null,
+  awesomeListDir: null,
 };
 
 function configPath() {
   return path.join(PROJECT_ROOT, CONFIG_FILENAME);
+}
+
+/** Trimmed string or null — every path-like config field follows this rule. */
+function textOrNull(value) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
 function normalizeConfig(raw) {
@@ -320,6 +330,8 @@ function normalizeConfig(raw) {
           }))
       : [],
     maxCheckpoints: Number.isFinite(maxCheckpoints) && maxCheckpoints > 0 ? Math.floor(maxCheckpoints) : 20,
+    awesomeRepoDir: textOrNull(value.awesomeRepoDir),
+    awesomeListDir: textOrNull(value.awesomeListDir),
   };
 }
 
