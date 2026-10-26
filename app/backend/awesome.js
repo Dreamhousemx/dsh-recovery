@@ -143,11 +143,25 @@ function readJsonOrUndefined(file) {
   }
 }
 
+/**
+ * Run one git command in a repository.
+ *
+ * `safe.directory` is passed explicitly for this invocation: the console often
+ * runs under a different OS account than the one that created the checkout, and
+ * git refuses to read such a repository ("dubious ownership"). That refusal used
+ * to make every git fact read as "absent", which then surfaced as a bogus
+ * "仓库没有 GitHub 远端" failure. Passing it per call avoids permanently editing
+ * the user's global git config.
+ */
 function runGit(dir, args) {
+  const safe = path.resolve(dir).replace(/\\/gu, "/");
   try {
-    const outcome = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 8000, windowsHide: true });
-    if (outcome.status !== 0) return undefined;
-    return String(outcome.stdout ?? "").trim();
+    const outcome = spawnSync("git", ["-C", dir, "-c", `safe.directory=${safe}`, ...args], {
+      encoding: "utf8",
+      timeout: 8000,
+      windowsHide: true,
+    });
+    return outcome.status === 0 ? String(outcome.stdout ?? "").trim() : undefined;
   } catch {
     return undefined;
   }
@@ -173,25 +187,33 @@ function parseRepoRef(input) {
   const raw = typeof input === "string" ? input.trim() : "";
   if (raw === "") return { kind: "empty" };
 
-  const bare = raw.replace(/^git\+/u, "").replace(/\.git$/u, "").replace(/\/+$/u, "");
-  const hash = bare.match(/^(?:github\.com\/)?([^/#\s]+)\/([^/#\s]+)#([^/\s]+)$/u);
-  if (hash !== null) return { kind: "remote", owner: hash[1], repo: hash[2], subpath: hash[3], ref: undefined };
+  // A path that exists on disk wins: "owner/repo" is a common directory layout
+  // too, and treating a real directory as a remote would be wrong.
+  if (isDirectory(raw) || isFile(raw)) return { kind: "local", dir: path.resolve(raw) };
 
-  const url = bare.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/\s]+)\/([^/\s]+)(?:\/tree\/([^/\s]+)(?:\/(.+?))?)?$/u);
-  if (url !== null && !isDirectory(raw)) {
+  const bare = raw.replace(/^git\+/u, "").replace(/\.git$/u, "").replace(/\/+$/u, "");
+
+  // Every URL dialect `git remote` and `package.json` use, including the forms
+  // that broke identity detection: `git+ssh://`, `ssh://`, and scp-style
+  // `git@github.com:owner/repo`. They all must yield owner/repo, not a path.
+  const gitUrl = bare.match(
+    /^(?:(?:https?|ssh|git|git\+ssh|git\+https):\/\/)?(?:[^@/\s]+@)?(?:www\.)?github\.com[/:]([^/\s:]+)\/([^/\s:]+)(?:\/tree\/([^/\s]+)(?:\/(.+?))?)?$/u,
+  );
+  if (gitUrl !== null) {
     return {
       kind: "remote",
-      owner: url[1],
-      repo: url[2].replace(/\.git$/u, ""),
-      ref: url[3],
-      subpath: url[4] === undefined ? undefined : url[4].replace(/\/+$/u, ""),
+      owner: gitUrl[1],
+      repo: gitUrl[2].replace(/\.git$/u, ""),
+      ref: gitUrl[3],
+      subpath: gitUrl[4] === undefined ? undefined : gitUrl[4].replace(/\/+$/u, ""),
     };
   }
 
+  const hash = bare.match(/^(?:github\.com[/:])?([^/#\s:]+)\/([^/#\s:]+)#([^/\s]+)$/u);
+  if (hash !== null) return { kind: "remote", owner: hash[1], repo: hash[2], subpath: hash[3], ref: undefined };
+
   const short = bare.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/u);
-  if (short !== null && !isDirectory(raw) && !isFile(raw)) {
-    return { kind: "remote", owner: short[1], repo: short[2] };
-  }
+  if (short !== null) return { kind: "remote", owner: short[1], repo: short[2] };
 
   return { kind: "local", dir: path.resolve(raw) };
 }
@@ -467,6 +489,18 @@ const MARKETING = [
   "神器",
 ];
 
+/**
+ * Turn a manifest description into something closer to a list line: collapse
+ * whitespace (a one-liner must stay one line) and make sure it ends with a
+ * period. It stays a *draft* — the caller still has to vouch that it describes
+ * the plugin.
+ */
+function normalizeDescription(text) {
+  const single = String(text ?? "").replace(/\s+/gu, " ").trim();
+  if (single === "") return "";
+  return /[.!?。！？]$/u.test(single) ? single : `${single}.`;
+}
+
 function validateDescription(text, locale) {
   const problems = [];
   const value = typeof text === "string" ? text.trim() : "";
@@ -485,8 +519,7 @@ function validateDescription(text, locale) {
   return { ok: problems.length === 0, problems };
 }
 
-/** Claims in a description that must be verified against the code by hand. */
-function descriptionClaims(text) {
+/** Claims in a description that must be verified against the code by hand. */function descriptionClaims(text) {
   const value = String(text ?? "");
   return {
     numbers: [...value.matchAll(/\b(\d{1,4})\s*(?:个|tools?|domains?|commands?|种|条|项)/giu)].map((match) => match[0]),
@@ -697,10 +730,12 @@ async function check(input = {}) {
   }
 
   const git = gitFacts(dir);
-  const identity = resolveIdentity(input, git);
   const candidates = manifestCandidates(dir);
   const root = candidates.find((entry) => entry.dir === dir);
   const bundleCandidate = candidates.find((entry) => isBundleManifest(entry.manifest));
+  // Identity may come from the manifest, so it is resolved after the manifests
+  // are read. `manifest` below is the same object used by the rest of the check.
+  const identity = resolveIdentity(input, git, (bundleCandidate ?? root)?.manifest);
 
   // ---- R2 manifest -------------------------------------------------------
   if (bundleCandidate === undefined) {
@@ -815,10 +850,33 @@ async function check(input = {}) {
   upstreamIssues(findings, manifest, identity);
 
   // ---- R7 description ----------------------------------------------------
-  const en = typeof input.descriptionEn === "string" ? input.descriptionEn.trim() : "";
+  // Only an explicit field is checked for format. When the panel field is
+  // empty the manifest description is offered as a starting point instead of
+  // failing: an untyped field is not a wrong description, and failing here
+  // would report a requirement the user has not been asked for yet.
+  const typedEn = typeof input.descriptionEn === "string" ? input.descriptionEn.trim() : "";
+  const manifestDescription = typeof manifest?.description === "string" ? manifest.description.trim() : "";
+  const en = typedEn;
   const zh = typeof input.descriptionZh === "string" ? input.descriptionZh.trim() : "";
   const enCheck = validateDescription(en, "en");
-  if (!enCheck.ok) {
+  if (en === "") {
+    if (manifestDescription === "") {
+      findings.push(finding("description", "fail", "缺少描述：只有 description.en 是必填的", "写一句说明插件做什么的话，以句号结尾，不带营销词"));
+    } else {
+      const draft = normalizeDescription(manifestDescription);
+      const draftCheck = validateDescription(draft, "en");
+      findings.push(
+        finding(
+          "description",
+          "warn",
+          `还没有填写 description.en；package.json 里现成的一句是：${draft}`,
+          draftCheck.ok
+            ? "可以直接用这一句（点「用 package.json 的描述」填入），但必须确认它真的描述了功能"
+            : `这一句还不能直接用（${draftCheck.problems.join("；")}），需要改写`,
+        ),
+      );
+    }
+  } else if (!enCheck.ok) {
     findings.push(finding("description", "fail", enCheck.problems.join("；"), "写一句说明插件做什么的话，以句号结尾，不带营销词"));
   } else {
     findings.push(finding("description", "ok", "描述格式符合要求"));
@@ -946,6 +1004,9 @@ async function check(input = {}) {
     findings,
     counts: { ok: findings.filter((item) => item.level === "ok").length, warn: warns.length, fail: fails.length },
     manualChecklist: manualChecklist({ claims, category, duplicate: list.available }),
+    // Pre-built copy payloads: the panel must be able to hand the blocking
+    // items to a person or an AI without re-deriving them from `findings`.
+    fixesText: { prompt: fixesText({ findings, dir, identity, fileName: naming.fileName }, "prompt"), list: fixesText({ findings }, "list") },
     prBody: entry === undefined ? undefined : renderPrBody(entry, naming, findings),
   };
 }
@@ -963,11 +1024,23 @@ function readReadme(dir) {
 }
 
 /** Owner/repo from the input, the git remote, or (for local-only repos) the folder name. */
-function resolveIdentity(input, git) {
+function resolveIdentity(input, git, manifest) {
   const ref = parseRepoRef(input.repo ?? input.url ?? "");
   if (ref.kind === "remote") return { owner: ref.owner, repo: ref.repo, subpath: ref.subpath, ref: ref.ref, source: "输入" };
   if (git.available && typeof git.owner === "string" && typeof git.repo === "string") {
     return { owner: git.owner, repo: git.repo, subpath: undefined, ref: git.branch, source: "git remote" };
+  }
+  // Fall back to the manifest's own `repository`/`homepage`: a checkout without
+  // a readable git layer still says where it lives, and that is what the listing
+  // URL has to match anyway.
+  const declared = typeof manifest?.repository === "string" ? manifest.repository : manifest?.repository?.url;
+  const fromRepo = parseRepoRef(declared ?? "");
+  if (fromRepo.kind === "remote") {
+    return { owner: fromRepo.owner, repo: fromRepo.repo, subpath: fromRepo.subpath, ref: fromRepo.ref, source: "package.json repository" };
+  }
+  const fromHomepage = parseRepoRef(typeof manifest?.homepage === "string" ? manifest.homepage : "");
+  if (fromHomepage.kind === "remote") {
+    return { owner: fromHomepage.owner, repo: fromHomepage.repo, subpath: fromHomepage.subpath, ref: fromHomepage.ref, source: "package.json homepage" };
   }
   return { owner: undefined, repo: undefined, subpath: undefined, ref: undefined, source: "无" };
 }
@@ -1070,6 +1143,47 @@ function upstreamIssues(findings, manifest, identity) {
       ),
     );
   }
+}
+
+/**
+ * The text for the「必须修正」copy buttons.
+ *
+ * `prompt` is a self-contained instruction block for an AI: where the repo is,
+ * every failing rule with its description and suggested fix, and what output is
+ * expected. `list` is just the problems, for a person or a GitHub issue.
+ *
+ * Neither embeds the plugin's source — the fixer reads the repository itself,
+ * which keeps the text short and avoids pasting code into the wrong context.
+ */
+function fixesText(check, mode = "prompt") {
+  const fails = (check?.findings ?? []).filter((item) => item.level === "fail");
+  const repo = check?.identity?.owner === undefined ? undefined : `${check.identity.owner}/${check.identity.repo}`;
+  const describe = (item) => `- ${item.rule}（${item.title}）\n  问题：${item.detail}${item.fix === undefined ? "" : `\n  修法：${item.fix}`}`;
+
+  if (mode === "list") return ["必须修正：", ...fails.map(describe)].join("\n");
+
+  return [
+    "请修改这个 DeepSeek Harness 插件仓库，使它满足 awesome-dsh-plugin 的收录要求。",
+    "",
+    `仓库目录：${check?.dir ?? "（未知）"}`,
+    repo === undefined ? undefined : `仓库：https://github.com/${repo}`,
+    check?.fileName === undefined ? undefined : `列表条目文件：data/plugins/${check.fileName}`,
+    "",
+    "以下项目前不通过（逐条修完再重新检查）：",
+    "",
+    ...fails.map(describe),
+    "",
+    "要求：",
+    "1. 直接读仓库里的文件确认现状，不要假设上面的描述已经完整；",
+    "2. 只改与这些问题相关的文件，不要顺手重写无关代码；",
+    "3. 描述类问题（R7）必须让描述与代码一致，如实描述功能，不要夸大；",
+    "4. 改完逐条说明「改了什么、为什么这样改」；",
+    "5. 不要手工编辑 awesome-dsh-plugin 的两个 README。",
+    "",
+    `规则来源：${CONTRIBUTING_URL}`,
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
 }
 
 function manualChecklist({ claims, category, duplicate }) {
@@ -1181,6 +1295,7 @@ module.exports = {
   check,
   entryFileName,
   fetchRepoMeta,
+  fixesText,
   inspectListDir,
   listEntries,
   parseRepoRef,

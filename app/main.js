@@ -214,7 +214,19 @@ async function runUiCheck({ shot }) {
       if (!awesomePanel.actions.some((button) => button.action === action)) issues.push(`收录插件面板缺少按钮 ${action}`);
     }
     const checkButton = awesomePanel.actions.find((button) => button.action === "awesome-check");
-    if (checkButton?.disabled !== true) issues.push("没有指定仓库时「检查并生成条目」应当禁用");
+    // 「检查」 is live only once a repository is configured. Which of the two
+    // states holds depends on the machine's saved config, so both are valid —
+    // what must never happen is the button disagreeing with the badge.
+    const repoConfigured = awesomePanel.text.includes("已指定插件仓库");
+    if (checkButton !== undefined && checkButton.disabled === repoConfigured) {
+      issues.push(repoConfigured ? "已指定仓库却禁用「检查并生成条目」" : "没有指定仓库时「检查并生成条目」应当禁用");
+    }
+    // The blocking card must offer the copy buttons that hand its contents off.
+    if (awesomePanel.text.includes("必须修正")) {
+      for (const action of ["awesome-copy-fixes"]) {
+        if (!awesomePanel.actions.some((button) => button.action === action)) issues.push(`「必须修正」卡片缺少按钮 ${action}`);
+      }
+    }
     if (!awesomePanel.text.includes("dsh.bundle")) issues.push("收录插件面板没有列出 dsh.bundle 规则");
     if (!awesomePanel.text.includes("收录到 awesome-dsh-plugin")) issues.push("收录插件面板缺少主卡片");
   }

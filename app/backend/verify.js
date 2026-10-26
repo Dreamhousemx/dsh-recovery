@@ -246,13 +246,46 @@ async function verifyAwesome(controller, fixture, result) {
     errorText(clientOnly) ?? JSON.stringify(clientOnly.awesome?.counts),
   );
 
-  // A missing description is the one required field: no entry, and above all no
-  // YAML containing the literal text `undefined`.
+  // A missing description is the one required field: no entry is generated, so
+  // no YAML can contain the literal text `undefined`. The manifest's own
+  // description is offered as a draft instead of a hard failure, because an
+  // untyped field is not the same as a wrong description.
   const noDescription = await check({ dir: fixture.pluginRepo, repo: "acme/verify-plugin", category: "ui" });
+  const noDescFinding = (noDescription.awesome?.findings ?? []).find((item) => item.rule === "description");
   result.ok(
-    "收录: 缺 description.en 时不生成条目",
-    noDescription.ok === false && noDescription.awesome?.yaml === undefined && noDescription.awesome?.entry === undefined,
-    JSON.stringify({ verdict: noDescription.awesome?.verdict, yaml: noDescription.awesome?.yaml }),
+    "收录: 缺 description.en 时不生成条目，但以 package.json 的描述作为草稿提示",
+    noDescription.awesome?.yaml === undefined &&
+      noDescription.awesome?.entry === undefined &&
+      noDescFinding?.level === "warn" &&
+      String(noDescFinding?.detail ?? "").includes("A verify fixture plugin"),
+    JSON.stringify({ level: noDescFinding?.level, yaml: noDescription.awesome?.yaml }),
+  );
+
+  // Blocking items must be copyable in a form that is self-contained enough for
+  // someone else (or an AI) to act on: repo, every rule, and the rule source.
+  const blocked = await check({ dir: fixture.clientOnlyRepo, repo: "acme/verify-client-only" });
+  const fixes = blocked.awesome?.fixesText;
+  result.ok(
+    "收录: 必须修正可整理成给 AI 的完整说明",
+    blocked.ok === false &&
+      typeof fixes?.prompt === "string" &&
+      fixes.prompt.includes("仓库目录：") &&
+      fixes.prompt.includes("R2") &&
+      fixes.prompt.includes("contributing.md") &&
+      fixes.prompt.includes("不要手工编辑"),
+    JSON.stringify({ hasPrompt: typeof fixes?.prompt, len: fixes?.prompt?.length }),
+  );
+  result.ok(
+    "收录: 问题清单只含必须修正项",
+    typeof fixes?.list === "string" && fixes.list.startsWith("必须修正：") && fixes.list.includes("R2"),
+    fixes?.list?.slice(0, 120),
+  );
+  // A passing check has nothing to hand over.
+  result.ok(
+    "收录: 无必须修正项时说明为空",
+    (pass.awesome?.fixesText?.prompt ?? "").includes("以下项目前不通过") &&
+      !(pass.awesome?.fixesText?.list ?? "").split("\n").some((line) => line.startsWith("- ")),
+    pass.awesome?.fixesText?.list,
   );
 
   await controller.dispatch("recovery:awesome-set-dir", ["list", fixture.listDir, { persist: false }]);

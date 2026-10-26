@@ -428,6 +428,35 @@ const ACTIONS = {
     const response = await run("检查收录条件", "awesomeCheck", options);
     if (response?.awesome?.ok === false) toast(`检查未通过：${response.awesome.counts.fail} 项必须修正`, "error");
   },
+  "awesome-copy-fixes": async (arg) => {
+    const check = state.awesome?.lastCheck;
+    const fails = (check?.findings ?? []).filter((item) => item.level === "fail");
+    if (fails.length === 0) {
+      toast("没有必须修正的项目", "ok");
+      return;
+    }
+    // The engine built both payloads with the check, so the copy always matches
+    // the findings on screen.
+    const text = arg === "list" ? check.fixesText?.list : check.fixesText?.prompt;
+    if (typeof text !== "string" || text === "") {
+      toast("没有可复制的内容", "error");
+      return;
+    }
+    await copyText(text, arg === "list" ? `已复制 ${fails.length} 项问题清单` : "已复制给 AI 的修改说明");
+  },
+  "awesome-use-draft": async () => {
+    const draft = state.awesome?.lastCheck?.manifest?.description;
+    const input = document.getElementById("awesome-en-input");
+    if (typeof draft !== "string" || draft.trim() === "" || input === null) {
+      toast("package.json 里没有可用的描述", "error");
+      return;
+    }
+    // Collapse to one line and add the period the list requires.
+    const single = draft.replace(/\s+/gu, " ").trim();
+    input.value = /[.!?。！？]$/u.test(single) ? single : `${single}.`;
+    input.focus();
+    toast("已填入，请确认它真的描述了功能后再检查", "ok");
+  },
   "awesome-copy": async () => {
     const yaml = state.awesome?.lastCheck?.yaml;
     if (typeof yaml !== "string") {
@@ -1158,7 +1187,15 @@ function renderAwesomeResult(info, check) {
         danger: true,
         title: "必须修正",
         desc: "这些项会让 PR 被拒或让条目名不副实。修好后重新检查。",
+        tags: [chip(`${fails.length} 项`, "danger")],
         body: list(fails.map(findingRow)),
+        // The whole point of this card is that its contents get handed to
+        // someone else (a person or an AI) to fix, so both copies carry every
+        // field needed to act: rule, what is wrong, and how to fix it.
+        actions: [
+          button("复制给 AI 修改", "awesome-copy-fixes", "prompt", { className: "btn--primary" }),
+          button("复制问题清单", "awesome-copy-fixes", "list", { className: "btn--ghost" }),
+        ],
       }),
     );
   }
@@ -1257,9 +1294,13 @@ function findingRow(item) {
 function renderAwesomeFields(info, check) {
   const entry = check?.entry;
   const categories = info.categories ?? [];
+  // The manifest's own description, offered as a starting point when the field
+  // is still empty. It is a draft, never applied silently.
+  const draft = check?.manifest?.description;
   return card({
     title: "条目字段",
     desc: "只有 description.en 是必填的；分类留空会按仓库内容推断，中文描述留空由维护者补。",
+    tags: draft === undefined ? undefined : [chip("package.json 里有现成描述", "mono")],
     body: [
       el("div", { class: "field-grid" }, [
         el("label", { class: "field" }, [
@@ -1324,6 +1365,13 @@ function renderAwesomeFields(info, check) {
       ]),
       hint("填完后点上面的「检查并生成条目」。检查会读这些字段，并重新生成 YAML。"),
     ],
+    // Only offered when there is something to offer: a one-click fill of the
+    // repo's own wording beats retyping it, and it is still the user's call.
+    actions:
+      draft === undefined
+        ? undefined
+        : [button("用 package.json 的描述填入", "awesome-use-draft", undefined, { className: "btn--ghost" })],
+    actionsEnd: true,
   });
 }
 
