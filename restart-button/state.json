@@ -1,23 +1,21 @@
 {
-  "toolVersion": "1.0.0",
-  "installedAt": "2026-10-25T09:54:06.169Z",
+  "toolVersion": "1.2.0",
+  "installedAt": "2026-10-30T03:45:30.386Z",
   "archive": "D:\\Dev Tools\\DeepSeek Harness\\resources\\app.asar",
   "entries": [
     {
       "entryPath": "lib/main.js",
-      "action": "write",
-      "hash": "5c79faddeac5069cae58abfc94225632cdaf9f55176751b14e81efb04af83fa2",
-      "previousHash": "f05dd366f6c468bedd83f07372bc59d3d6b3f6bcc6950565c8b4173597e3ba93",
-      "hashHits": 2,
-      "size": 516716
+      "action": "skip",
+      "hash": "839f7757be61f00f54925530b70fb0f48b42208fe7ced6be4bf75f3f25adcc95",
+      "size": 516716,
+      "note": "已经是载荷内容"
     },
     {
       "entryPath": "lib/preload-app.cjs",
-      "action": "write",
+      "action": "skip",
       "hash": "e42784d0f4c072af03f78b2aba02ade4c6ed81609ae30e8320b67b3647116992",
-      "previousHash": "f323eb67f7ace407d3b1d858f264f7846e436d9ba3e80c02b0454a6da0aed968",
-      "hashHits": 2,
-      "size": 41075
+      "size": 41075,
+      "note": "已经是载荷内容"
     }
   ],
   "backupDir": "D:\\Workspace\\DeepSeek Harness\\dsh-recovery\\restart-button\\backup",

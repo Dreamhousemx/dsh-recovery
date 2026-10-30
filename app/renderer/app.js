@@ -146,8 +146,8 @@ function card({ icon, title, desc, body, actions, actionsEnd, danger, tags }) {
   ]);
 }
 
-function row({ name, mono, sub, side, muted }) {
-  return el("div", { class: `row${muted === true ? " row--muted" : ""}` }, [
+function row({ name, mono, sub, side, muted, plugin }) {
+  return el("div", { class: `row${muted === true ? " row--muted" : ""}${plugin === true ? " row--plugin" : ""}` }, [
     el("div", { class: "row__main" }, [
       el("div", { class: `row__name${mono === true ? " row__name--mono" : ""}`, text: name }),
       sub === undefined ? undefined : el("div", { class: "row__sub", text: sub }),
@@ -236,6 +236,9 @@ const ACTIONS = {
   },
   "open-path": (arg) => run("打开路径", "openPath", arg),
   "show-item": (arg) => run("定位文件", "showItem", arg),
+  // One action for both sources: the backend decides between revealing a local
+  // working copy and opening a project homepage.
+  "open-plugin": (arg) => run("打开插件", "openPlugin", arg),
   "open-profile-dir": () => run("打开 Profile 目录", "openProfileDir"),
   "choose-home": () => run("选择数据目录", "chooseHome"),
   "reset-home": () => run("恢复默认数据目录", "resetHome"),
@@ -698,9 +701,18 @@ function renderPlugins() {
   const offCount = bundles.filter((plugin) => plugin.enabled !== true).length;
   const patchDisabledCount = (detail.patchEntries ?? []).filter((entry) => entry.disabled === true).length;
 
+  // Split by where the plugin came from. A plugin linked from a working copy
+  // is edited locally and lives in some folder the user cares about; a plugin
+  // pulled from a registry has no meaningful folder, only a project page.
+  // Built-ins ship inside the application, so they are neither.
+  const localPlugins = bundles.filter((plugin) => plugin.source === "local");
+  const registryPlugins = bundles.filter((plugin) => plugin.source === "registry");
+  const builtinPlugins = bundles.filter((plugin) => plugin.source === "builtin" || plugin.source === undefined);
+  const enabledCount = bundles.filter((plugin) => plugin.enabled === true).length;
+
   const nodes = [
     panelBar(
-      `已启用 ${bundles.filter((plugin) => plugin.enabled === true).length} / ${bundles.length} 个插件` +
+      `已启用 ${enabledCount} / ${bundles.length} 个插件 · 本地 ${localPlugins.length} · 网上 ${registryPlugins.length}` +
         (patchDisabledCount > 0 ? ` · 补丁层禁用 ${patchDisabledCount} 条` : ""),
       [
         button("一键启用全部插件", "enable-all-bundles", undefined, {
@@ -719,18 +731,53 @@ function renderPlugins() {
     ),
     hint(
       "查看当前 Profile 中安装的插件。可以禁用插件（保留安装，启动时不加载），也可以彻底卸载（移入隔离区，可随时还原）。" +
+        "按来源分成两组：本地插件用 `link:` 指向工作副本（「打开」定位到该文件夹），网上安装的插件从 npm 装进 Profile（「打开」打开其主页）。" +
         (running ? " 目标应用正在运行，改动类操作已暂时禁用。" : ""),
     ),
-    card({
-      title: "插件",
-      desc: `Profile ${detail.name} · 清单 ${detail.manifestPath}`,
-      tags: running ? [chip("应用运行中", "warn")] : undefined,
-      body:
-        bundles.length === 0
-          ? empty("这个 Profile 还没有启用任何插件。")
-          : list(bundles.map((plugin) => pluginRow(plugin, running))),
-    }),
   ];
+
+  if (bundles.length === 0) {
+    nodes.push(card({ title: "插件", desc: `Profile ${detail.name} · 清单 ${detail.manifestPath}`, body: empty("这个 Profile 还没有启用任何插件。") }));
+  }
+
+  if (localPlugins.length > 0) {
+    nodes.push(
+      card({
+        title: "本地插件",
+        icon: "📁",
+        desc: `用 link: 指向工作副本的插件：「打开」会在文件管理器中定位它的真实目录，改代码立即生效。${localPlugins.length} 个。`,
+        tags: [chip(`${localPlugins.length} 个`, "ok")],
+        body: list(localPlugins.map((plugin) => pluginRow(plugin, running))),
+      }),
+    );
+  }
+
+  if (registryPlugins.length > 0) {
+    const noHome = registryPlugins.filter((plugin) => typeof plugin.homepage !== "string").length;
+    nodes.push(
+      card({
+        title: "网上安装的插件",
+        icon: "🌐",
+        desc:
+          `从 npm 安装进 Profile 的插件：「打开」会在浏览器打开项目主页。${registryPlugins.length} 个` +
+          (noHome > 0 ? `，其中 ${noHome} 个没有声明 homepage / repository，无法打开主页。` : "。"),
+        tags: [chip(`${registryPlugins.length} 个`)],
+        body: list(registryPlugins.map((plugin) => pluginRow(plugin, running))),
+      }),
+    );
+  }
+
+  if (builtinPlugins.length > 0) {
+    nodes.push(
+      card({
+        title: "内置组件",
+        icon: "🧩",
+        desc: "随应用一起发布的组件，不能禁用也不能卸载；「打开」定位到 Profile 内的安装副本。",
+        tags: [chip(`${builtinPlugins.length} 个`, "muted")],
+        body: list(builtinPlugins.map((plugin) => pluginRow(plugin, running))),
+      }),
+    );
+  }
 
   if (others.length > 0) {
     nodes.push(
@@ -743,8 +790,16 @@ function renderPlugins() {
               name: plugin.name,
               mono: true,
               muted: true,
-              sub: joinSub(plugin.categoryLabel, plugin.version, plugin.installedLocal === true ? undefined : "未安装在本地"),
-              side: [chip(plugin.enabled === true ? "在插件层中" : "未启用", plugin.enabled === true ? "ok" : undefined)],
+              sub: joinSub(
+                plugin.categoryLabel,
+                plugin.version,
+                plugin.installedLocal === true ? undefined : "未安装在本地",
+                plugin.source === "local" ? plugin.sourcePath ?? plugin.spec : undefined,
+              ),
+              side: [
+                plugin.source === "local" ? chip("本地", "ok") : undefined,
+                chip(plugin.enabled === true ? "在插件层中" : "未启用", plugin.enabled === true ? "ok" : undefined),
+              ],
             }),
           ),
         ),
@@ -803,12 +858,39 @@ function renderPlugins() {
 function pluginRow(plugin, running) {
   const core = plugin.core === true;
   const cannotUninstall = core || plugin.quarantinable !== true;
+  const local = plugin.source === "local";
+  const builtin = plugin.source === "builtin" || plugin.source === undefined;
+  // The row's "open" target follows the source: a local working copy opens its
+  // folder, a registry plugin opens its homepage. Both are decided in the
+  // backend from the same row data, so this only has to know whether one is
+  // available at all.
+  const canOpen = local || builtin ? plugin.installedLocal === true || typeof plugin.sourcePath === "string" : typeof plugin.homepage === "string";
+  const sourceChip = local ? chip("本地", "ok") : builtin ? chip("内置", "muted") : chip("网上安装");
   return row({
     name: plugin.name,
     mono: true,
-    sub: joinSub(plugin.categoryLabel, plugin.version, plugin.installedLocal === true ? undefined : "未安装在本地"),
+    plugin: true,
+    sub: joinSub(
+      plugin.categoryLabel,
+      plugin.version,
+      plugin.installedLocal === true ? undefined : "未安装在本地",
+      local ? plugin.sourcePath ?? plugin.spec : undefined,
+    ),
     side: [
+      sourceChip,
       chip(plugin.enabled === true ? "已启用" : "已禁用", plugin.enabled === true ? "ok" : undefined),
+      button(local || builtin ? "打开文件夹" : "打开官网", "open-plugin", plugin.name, {
+        className: "btn--ghost",
+        disabled: canOpen !== true,
+        title:
+          canOpen !== true
+            ? local || builtin
+              ? "找不到该插件的目录"
+              : "package.json 里没有 homepage / repository"
+            : local || builtin
+              ? `在文件管理器中定位 ${plugin.sourcePath ?? plugin.installedPath ?? ""}`
+              : `在浏览器中打开 ${plugin.homepage}`,
+      }),
       button(plugin.enabled === true ? "禁用" : "启用", "toggle-bundle", plugin.name, {
         disabled: running || (core && plugin.enabled === true) || (plugin.enabled !== true && plugin.declared !== true),
         title: core
@@ -1729,6 +1811,25 @@ function renderDiagnostics() {
 
 // --- footer ---------------------------------------------------------------
 
+/**
+ * Footer buttons for one running state.
+ *
+ * Returns an object rather than an array so the caller can never append a hole
+ * to the DOM: a stopped application has no "停止" button, and passing `undefined`
+ * to the *native* `ParentNode.append()` renders the literal text "undefined" —
+ * the bug this shape exists to make impossible.
+ */
+function footerActions(running) {
+  return {
+    refresh: { label: "刷新状态", action: "refresh", className: "btn--ghost" },
+    stop: running ? { label: "停止", action: "stop" } : undefined,
+    primary: running
+      ? { label: "重启", action: "restart", arg: "normal", className: "btn--primary" }
+      : { label: "启动", action: "launch", arg: "normal", className: "btn--primary" },
+    quit: { label: "退出", action: "quit" },
+  };
+}
+
 function renderFooter() {
   const host = document.getElementById("status");
   const actions = document.getElementById("footer-actions");
@@ -1751,11 +1852,12 @@ function renderFooter() {
     }),
   );
 
-  clear(actions).append(
-    button("刷新状态", "refresh", undefined, { className: "btn--ghost" }),
-    running ? button("停止", "stop") : undefined,
-    running ? button("重启", "restart", "normal", { className: "btn--primary" }) : button("启动", "launch", "normal", { className: "btn--primary" }),
-    button("退出", "quit"),
+  // `append()` is the local helper (skips undefined/null/false); the native
+  // ParentNode.append() would stringify a missing entry instead.
+  const spec = footerActions(running);
+  append(
+    clear(actions),
+    Object.values(spec).map((entry) => button(entry.label, entry.action, entry.arg, { className: entry.className })),
   );
 }
 

@@ -45,6 +45,7 @@ const CHANNELS = [
   "recovery:open-profile-dir",
   "recovery:open-path",
   "recovery:show-item",
+  "recovery:open-plugin",
   "recovery:checkpoints",
   "recovery:create-checkpoint",
   "recovery:restore-checkpoint",
@@ -183,7 +184,53 @@ async function runUiCheck({ shot }) {
     "((id) => { const node = document.querySelector(`.panel[data-panel=\"${id}\"]`); return node === null ? null : { text: node.innerText, actions: [...node.querySelectorAll('button[data-action]')].map((b) => ({ action: b.dataset.action, label: b.textContent, disabled: b.disabled })) }; })";
   const pluginsPanel = await win.webContents.executeJavaScript(`${panelProbe}("plugins")`);
   if (pluginsPanel === null) issues.push("找不到「插件管理」面板");
-  else if (!pluginsPanel.actions.some((button) => button.action === "enable-all-bundles")) issues.push("插件管理面板缺少「一键启用全部插件」按钮");
+  else {
+    if (!pluginsPanel.actions.some((button) => button.action === "enable-all-bundles")) issues.push("插件管理面板缺少「一键启用全部插件」按钮");
+    // Every plugin row must offer its own "open" action, and the label has to
+    // agree with the source: 本地 -> folder, 网上安装 -> homepage. A row whose
+    // target is unknown renders the button disabled instead of hiding it, so
+    // the count below stays meaningful.
+    const openers = pluginsPanel.actions.filter((button) => button.action === "open-plugin");
+    // Count rows and openers in the DOM: the plugin list also mentions 已启用 /
+    // 已禁用 in chips and hints, so counting words in the text is not a row count.
+    const rowCounts = await win.webContents.executeJavaScript(
+      "(() => { const p = document.querySelector('.panel[data-panel=\"plugins\"]'); return p === null ? null : { rows: p.querySelectorAll('.row.row--plugin').length, openers: p.querySelectorAll('.row.row--plugin button[data-action=\"open-plugin\"]').length }; })()",
+    );
+    if (rowCounts !== null && rowCounts.openers !== rowCounts.rows) {
+      issues.push(`插件管理：${rowCounts.rows} 行插件只渲染了 ${rowCounts.openers} 个「打开」按钮`);
+    }
+    if (rowCounts === null || rowCounts.rows === 0) issues.push("插件管理面板没有任何插件行");
+    const mislabelled = openers.filter((button) => button.label !== "打开文件夹" && button.label !== "打开官网");
+    if (mislabelled.length > 0) issues.push(`插件管理：「打开」按钮文案异常 ${mislabelled.map((b) => b.label).join(", ")}`);
+    // A stopped app must not print the word "undefined" anywhere in the panel
+    // or the footer; that used to happen when a missing action was appended
+    // with the native DOM append.
+    if (/undefined/u.test(pluginsPanel.text)) issues.push("插件管理面板出现了 undefined 文字");
+  }
+  const footerText = await win.webContents.executeJavaScript("document.getElementById('footer-actions')?.innerText ?? ''");
+  if (/undefined/u.test(footerText)) issues.push(`页脚出现了 undefined 文字：${footerText.trim()}`);
+  // The reported bug only appears while the application is stopped, which the
+  // live window cannot always reproduce (it may well be running). Ask the
+  // renderer for both states of the pure builder instead.
+  const footerStates = await win.webContents.executeJavaScript(
+    "(() => { const out = {}; for (const running of [false, true]) { const spec = footerActions(running); out[String(running)] = { keys: Object.keys(spec), holey: Object.values(spec).filter((v) => v === undefined).length, labels: Object.values(spec).filter(Boolean).map((v) => v.label) }; } return out; })()",
+  );
+  for (const [key, expected] of [
+    ["false", ["刷新状态", "启动", "退出"]],
+    ["true", ["刷新状态", "停止", "重启", "退出"]],
+  ]) {
+    const got = footerStates?.[key];
+    if (got === undefined) {
+      issues.push(`页脚状态 ${key} 无法求值`);
+      continue;
+    }
+    // A hole in the object is fine (the local append() drops it); a label list
+    // that differs means a button went missing or gained an "undefined" label.
+    if (got.holey > 1) issues.push(`页脚状态 ${key} 有 ${got.holey} 个空按钮`);
+    if (JSON.stringify(got.labels) !== JSON.stringify(expected)) {
+      issues.push(`页脚状态 ${key} 的按钮为 ${got.labels.join("/")}，期望 ${expected.join("/")}`);
+    }
+  }
   const checkpointsPanel = await win.webContents.executeJavaScript(`${panelProbe}("checkpoints")`);
   if (checkpointsPanel === null) issues.push("找不到「回滚」面板");
   else {

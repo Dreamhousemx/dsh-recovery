@@ -21,6 +21,11 @@ const { ensureDir, isDirectory, isFile, readJson, removeEntry, writeJsonAtomic }
 const FIXTURE_PROFILE = "demo";
 const FIXTURE_BUNDLE = "fake-bundle";
 const FIXTURE_DEP = "fake-dep";
+// Declared as `link:<folder>` and installed as a junction, so 插件管理 has a
+// local (working copy) plugin to classify next to the registry one.
+const FIXTURE_LINKED = "fake-linked";
+// A registry package that declares no homepage and no repository.
+const FIXTURE_NOHOME = "fake-no-home";
 const CORE_BUNDLE = "@deepseek-ai/dsh-base";
 
 function sleep(ms) {
@@ -151,7 +156,7 @@ function buildFixture(root) {
   writeJsonAtomic(path.join(profileDir, "package.json"), {
     name: `dsh-profile-${FIXTURE_PROFILE}`,
     private: true,
-    dependencies: { [FIXTURE_BUNDLE]: "1.0.0", [FIXTURE_DEP]: "1.0.0" },
+    dependencies: { [FIXTURE_BUNDLE]: "1.0.0", [FIXTURE_DEP]: "1.0.0", [CORE_BUNDLE]: "0.0.0-verify" },
     dsh: { profile: { bundles: [FIXTURE_BUNDLE] } },
   });
   writeJsonAtomic(path.join(profileDir, "node_modules", FIXTURE_BUNDLE, "package.json"), {
@@ -167,6 +172,23 @@ function buildFixture(root) {
     version: "1.0.0",
   });
   fs.writeFileSync(path.join(profileDir, "cordis.patch.yml"), `- id: fake-row\n  name: ${FIXTURE_BUNDLE}\n`);
+
+  // A built-in component (they ship with the application, so the fixture needs
+  // a real package.json for 插件管理 to classify it as `builtin`), and a
+  // registry package that declares its homepage so the row's "open" button has
+  // a URL to offer.
+  ensureDir(path.join(profileDir, "node_modules", ...CORE_BUNDLE.split("/")));
+  writeJsonAtomic(path.join(profileDir, "node_modules", ...CORE_BUNDLE.split("/"), "package.json"), {
+    name: CORE_BUNDLE,
+    version: "0.0.0-verify",
+    dsh: { bundle: { patch: "./patch.yml" } },
+  });
+  writeJsonAtomic(path.join(profileDir, "node_modules", FIXTURE_BUNDLE, "package.json"), {
+    name: FIXTURE_BUNDLE,
+    version: "1.0.0",
+    homepage: "https://example.invalid/fake-bundle",
+    dsh: { bundle: { patch: "./patch.yml" } },
+  });
 
   // A synthetic plugin repository plus a synthetic clone of the awesome-list,
   // so 收录插件 checks run on exactly the shapes contributing.md describes
@@ -201,7 +223,7 @@ function buildFixture(root) {
     "url: https://github.com/someone/verify-plugin\nname: someone/verify-plugin\ncategory: tools\ndescription:\n  en: Another plugin.\n",
   );
 
-  return { installDir, home, profileDir, work, pluginRepo, clientOnlyRepo, listDir };
+  return { root, installDir, home, profileDir, work, pluginRepo, clientOnlyRepo, listDir };
 }
 
 /**
@@ -456,6 +478,98 @@ async function verifyPluginManagement(controller, fixture, result) {
       !fs.existsSync(path.join(fixture.profileDir, paths.RECOVERY_STATE_DIR_NAME, "removed", String(discardId))),
     errorText(discarded),
   );
+
+  // 插件管理 groups rows by where they came from, and the group decides what
+  // the row's "open" button does. The fixture deliberately contains one of
+  // each: a registry-style package, a `link:` dependency pointing at a folder
+  // outside the profile, and a built-in component.
+  const linkedTarget = path.join(fixture.root, "linked-plugin");
+  ensureDir(linkedTarget);
+  writeJsonAtomic(path.join(linkedTarget, "package.json"), {
+    name: FIXTURE_LINKED,
+    version: "1.0.0",
+    dsh: { bundle: { patch: "./patch.yml" } },
+  });
+  fs.writeFileSync(path.join(linkedTarget, "patch.yml"), "- insert: []\n");
+  const linkPath = path.join(fixture.profileDir, "node_modules", FIXTURE_LINKED);
+  removeEntry(linkPath);
+  fs.symlinkSync(linkedTarget, linkPath, "junction");
+  const linkedManifest = readJson(manifestPath);
+  linkedManifest.value.dependencies = { ...linkedManifest.value.dependencies, [FIXTURE_LINKED]: `link:${linkedTarget}` };
+  linkedManifest.value.dsh.profile.bundles = [...linkedManifest.value.dsh.profile.bundles, FIXTURE_LINKED];
+  writeJsonAtomic(manifestPath, linkedManifest.value);
+  await controller.dispatch("recovery:refresh", []);
+  const rows = controller.state.selectedProfileDetail?.plugins ?? [];
+  const byName = (name) => rows.find((entry) => entry.name === name);
+  const linkedRow = byName(FIXTURE_LINKED);
+  const registryRow = byName(FIXTURE_BUNDLE);
+  const coreRow = byName(CORE_BUNDLE);
+  result.ok(
+    "插件管理: 按来源分类（本地/网上/内置）",
+    linkedRow?.source === "local" &&
+      registryRow?.source === "registry" &&
+      coreRow?.source === "builtin",
+    JSON.stringify({ linked: linkedRow?.source, registry: registryRow?.source, builtin: coreRow?.source }),
+  );
+  result.ok(
+    "插件管理: 本地插件记录真实目录",
+    typeof linkedRow?.sourcePath === "string" &&
+      linkedRow.sourcePath.toLowerCase() === path.resolve(linkedTarget).toLowerCase() &&
+      linkedRow.linked === true,
+    linkedRow?.sourcePath,
+  );
+  result.ok(
+    "插件管理: 网上插件解析出主页",
+    typeof registryRow?.homepage === "string" && /^https?:\/\//u.test(registryRow.homepage),
+    registryRow?.homepage,
+  );
+
+  // The open action must dispatch on the source, not on a caller-supplied path:
+  // the renderer only ever passes a package name.
+  const openLocal = await controller.dispatch("recovery:open-plugin", [FIXTURE_LINKED]);
+  result.ok(
+    "插件管理: 本地插件的「打开」定位到文件夹",
+    openLocal.ok === true && openLocal.result?.kind === "folder" &&
+      String(openLocal.result?.opened).toLowerCase() === path.resolve(linkedTarget).toLowerCase(),
+    errorText(openLocal) ?? openLocal.result?.opened,
+  );
+  const openUnknown = await controller.dispatch("recovery:open-plugin", ["not-a-plugin"]);
+  result.ok("插件管理: 未知插件名的「打开」被拒绝", openUnknown.ok === false, errorText(openUnknown));
+  // A registry package with neither homepage nor repository must fail loudly
+  // instead of opening something arbitrary.
+  const noHomePath = path.join(fixture.profileDir, "node_modules", FIXTURE_NOHOME);
+  ensureDir(noHomePath);
+  writeJsonAtomic(path.join(noHomePath, "package.json"), { name: FIXTURE_NOHOME, version: "1.0.0", dsh: { bundle: { patch: "./patch.yml" } } });
+  writeJsonAtomic(path.join(noHomePath, "patch.yml"), "- insert: []\n");
+  const noHomeManifest = readJson(manifestPath);
+  noHomeManifest.value.dependencies = { ...noHomeManifest.value.dependencies, [FIXTURE_NOHOME]: "1.0.0" };
+  noHomeManifest.value.dsh.profile.bundles = [...noHomeManifest.value.dsh.profile.bundles, FIXTURE_NOHOME];
+  writeJsonAtomic(manifestPath, noHomeManifest.value);
+  await controller.dispatch("recovery:refresh", []);
+  const noHomeRow = (controller.state.selectedProfileDetail?.plugins ?? []).find((entry) => entry.name === FIXTURE_NOHOME);
+  result.ok(
+    "插件管理: 没有主页的插件标记为无法打开",
+    noHomeRow !== undefined && noHomeRow.source === "registry" && noHomeRow.homepage === undefined,
+    JSON.stringify({ source: noHomeRow?.source, homepage: noHomeRow?.homepage }),
+  );
+  const openNoHome = await controller.dispatch("recovery:open-plugin", [FIXTURE_NOHOME]);
+  result.ok(
+    "插件管理: 没有主页的插件给出明确错误",
+    openNoHome.ok === false && /主页/u.test(errorText(openNoHome) ?? ""),
+    errorText(openNoHome),
+  );
+  removeEntry(noHomePath);
+  const noHomeReset = readJson(manifestPath);
+  delete noHomeReset.value.dependencies[FIXTURE_NOHOME];
+  noHomeReset.value.dsh.profile.bundles = noHomeReset.value.dsh.profile.bundles.filter((name) => name !== FIXTURE_NOHOME);
+  writeJsonAtomic(manifestPath, noHomeReset.value);
+  // Leave the fixture as the later checks expect it.
+  removeEntry(linkPath);
+  const resetManifest = readJson(manifestPath);
+  delete resetManifest.value.dependencies[FIXTURE_LINKED];
+  resetManifest.value.dsh.profile.bundles = resetManifest.value.dsh.profile.bundles.filter((name) => name !== FIXTURE_LINKED);
+  writeJsonAtomic(manifestPath, resetManifest.value);
+  await controller.dispatch("recovery:refresh", []);
 }
 
 async function verifyPluginUpdater(controller, fixture, result) {

@@ -156,8 +156,25 @@ function formatBytes(bytes) {
 function removeEntry(target) {
   const stat = lstatOrUndefined(target);
   if (stat === undefined) return false;
-  if (stat.isDirectory() && !stat.isSymbolicLink()) fs.rmSync(target, { recursive: true, force: true });
-  else fs.rmSync(target, { force: true });
+  if (stat.isSymbolicLink()) {
+    // A directory junction / symlink must be unlinked, never recursed into: on
+    // Windows `fs.rmSync(link, { force: true })` fails with ERR_FS_EISDIR for a
+    // junction, and a recursive delete would walk the link target and destroy
+    // the user's working copy (plugins installed with `link:` are exactly this
+    // shape). `unlink` removes the reparse point itself.
+    try {
+      fs.unlinkSync(target);
+    } catch (error) {
+      // Some Windows builds expose a junction as a directory to lstat; the
+      // rmdir below removes the link without touching its contents.
+      if (error.code !== "EPERM" && error.code !== "EISDIR") throw error;
+      fs.rmdirSync(target);
+    }
+  } else if (stat.isDirectory()) {
+    fs.rmSync(target, { recursive: true, force: true });
+  } else {
+    fs.rmSync(target, { force: true });
+  }
   return true;
 }
 

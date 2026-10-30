@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld("recovery", {
   openProfileDir: () => invoke("recovery:open-profile-dir"),
   openPath: (target) => invoke("recovery:open-path", target),
   showItem: (target) => invoke("recovery:show-item", target),
+  openPlugin: (name) => invoke("recovery:open-plugin", name),
 
   // --- checkpoints -------------------------------------------------------
   checkpoints: () => invoke("recovery:checkpoints"),

@@ -3,16 +3,16 @@
     "lib/main.js": {
       "backupFile": "backup\\lib__main.js.orig",
       "size": 516716,
-      "sha256": "f05dd366f6c468bedd83f07372bc59d3d6b3f6bcc6950565c8b4173597e3ba93",
-      "headerHash": "f05dd366f6c468bedd83f07372bc59d3d6b3f6bcc6950565c8b4173597e3ba93",
-      "backedUpAt": "2026-10-24T05:36:02.420Z"
+      "sha256": "9712da3c65d5d4262da7e6d41dad30586070c8eb47f078c62165de2bdba572c3",
+      "headerHash": "9712da3c65d5d4262da7e6d41dad30586070c8eb47f078c62165de2bdba572c3",
+      "backedUpAt": "2026-10-30T03:33:59.170Z"
     },
     "lib/preload-app.cjs": {
       "backupFile": "backup\\lib__preload-app.cjs.orig",
       "size": 41075,
       "sha256": "f323eb67f7ace407d3b1d858f264f7846e436d9ba3e80c02b0454a6da0aed968",
       "headerHash": "f323eb67f7ace407d3b1d858f264f7846e436d9ba3e80c02b0454a6da0aed968",
-      "backedUpAt": "2026-10-24T05:36:02.457Z"
+      "backedUpAt": "2026-10-30T03:33:59.194Z"
     }
   }
 }

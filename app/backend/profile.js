@@ -101,6 +101,61 @@ function isBundleLayer(profileDir, name) {
   return isCoreBundle(name) || BUNDLE_METADATA[name] !== undefined || declaresBundle(profileDir, name);
 }
 
+/**
+ * Where a plugin came from, so the UI can offer the right "open" action:
+ *
+ *   local    - a `link:`/`file:` dependency or a symlinked node_modules entry.
+ *              The useful target is the folder it actually resolves to, which
+ *              usually lives outside the profile (a working copy).
+ *   registry - an ordinary installed package. There is no folder worth
+ *              opening, so the useful target is its project homepage.
+ *
+ * Decided from the manifest specifier *and* the filesystem, because a package
+ * that was installed from a registry can still be replaced by a junction
+ * during development, and a `link:` spec can point at a missing folder.
+ */
+function pluginOrigin(name, profileDir, declared) {
+  const spec = typeof declared === "string" ? declared : "";
+  const specIsLocal = /^(?:link|file):/iu.test(spec);
+  const installedDir = path.join(profileDir, "node_modules", ...String(name).split("/"));
+  const stat = lstatOrUndefined(installedDir);
+  const linked = stat !== undefined && stat.isSymbolicLink();
+  let localPath;
+  if (stat !== undefined && (linked || stat.isDirectory())) {
+    try {
+      localPath = fs.realpathSync(installedDir);
+    } catch {
+      localPath = undefined;
+    }
+  }
+  return {
+    source: specIsLocal || linked ? "local" : "registry",
+    // Only report a folder that differs from the profile copy: that is the one
+    // the user thinks of as "the plugin's own folder".
+    sourcePath: linked ? localPath : specIsLocal ? localPath : undefined,
+    linked,
+    spec: spec === "" ? undefined : spec,
+  };
+}
+
+/**
+ * Browser-openable homepage for a package: `homepage` when it is http(s),
+ * otherwise the `repository` URL rewritten from git form to https.
+ */
+function pluginHomepage(packageJson) {
+  const homepage = typeof packageJson?.homepage === "string" ? packageJson.homepage.trim() : "";
+  if (/^https?:\/\//iu.test(homepage)) return homepage;
+  const repository = packageJson?.repository;
+  const raw = typeof repository === "string" ? repository : typeof repository?.url === "string" ? repository.url : "";
+  const match = /^(?:git\+)?(?:https?|ssh):\/\/(?:git@)?([^/]+)\/(.+?)(?:\.git)?\/?$/iu.exec(raw.trim());
+  if (match !== null) return `https://${match[1]}/${match[2].replace(/\.git$/iu, "")}`;
+  // `git@github.com:owner/repo.git` — the scp-like form npm also accepts.
+  const scp = /^git@([^:]+):(.+?)(?:\.git)?\/?$/u.exec(raw.trim());
+  if (scp !== null) return `https://${scp[1]}/${scp[2]}`;
+  if (/^https?:\/\//iu.test(raw)) return raw;
+  return undefined;
+}
+
 /** Package-level description of every declared dependency, plus enabled bundles. */
 function listPlugins(profileDir, manifest) {
   const dependencies = manifest?.dependencies;
@@ -114,6 +169,7 @@ function listPlugins(profileDir, manifest) {
     const packageJson = readJson(path.join(installedDir, "package.json"));
     const declared = dependencies !== null && typeof dependencies === "object" ? dependencies[name] : undefined;
     const info = describeBundle(name);
+    const origin = pluginOrigin(name, profileDir, declared);
     rows.push({
       ...info,
       version: typeof packageJson.value?.version === "string" ? packageJson.value.version : typeof declared === "string" ? declared : undefined,
@@ -124,9 +180,25 @@ function listPlugins(profileDir, manifest) {
       installedLocal: pathExists(installedDir),
       quarantinable: pathExists(installedDir),
       declared: declared !== undefined,
+      // Source classification for the 插件管理 panel: 本地 vs 网上安装.
+      source: builtinOrigin(name) ?? origin.source,
+      sourcePath: origin.sourcePath,
+      linked: origin.linked,
+      spec: origin.spec,
+      homepage: pluginHomepage(packageJson.value),
+      installedPath: pathExists(installedDir) ? installedDir : undefined,
     });
   }
   return rows;
+}
+
+/**
+ * Built-in components ship inside the application, so neither "local working
+ * copy" nor "installed from the registry" describes them; they are pinned to
+ * `builtin` so the panel can group them separately instead of guessing.
+ */
+function builtinOrigin(name) {
+  return isCoreBundle(name) ? "builtin" : undefined;
 }
 
 /**

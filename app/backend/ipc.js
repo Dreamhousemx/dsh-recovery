@@ -397,6 +397,36 @@ class RecoveryController {
       case "recovery:open-path":
         return this.openPath(String(args[0] ?? ""));
 
+      // "Open" on one 插件管理 row. The renderer passes only the package name;
+      // the target is decided here from the same data the panel displays, so
+      // the button can never be pointed at an arbitrary path or URL:
+      //   local plugin    -> its own folder (the `link:` target), in Explorer
+      //   registry plugin -> its project homepage
+      case "recovery:open-plugin": {
+        const name = String(args[0] ?? "");
+        if (name === "") return { ok: false, error: "缺少插件名", state: this.state };
+        const plugin = (this.state?.selectedProfileDetail?.plugins ?? []).find((entry) => entry.name === name);
+        if (plugin === undefined) return { ok: false, error: `当前 Profile 中找不到插件: ${name}`, state: this.state };
+        // A linked working copy is what the user wants to reach; fall back to
+        // the profile's copy only when the link target is gone.
+        const folder = plugin.sourcePath ?? plugin.installedPath;
+        if (plugin.source === "local" || plugin.source === "builtin") {
+          if (typeof folder !== "string" || !isDirectory(folder)) {
+            return { ok: false, error: `本地目录不存在: ${folder ?? "(未记录)"}`, state: this.state };
+          }
+          // Deliberately outside assertOpenable(): this folder is the plugin's
+          // own source, wherever it lives, and it is read from our own state
+          // rather than from the renderer.
+          shell.showItemInFolder(folder);
+          return { ok: true, result: { message: `已在文件管理器中定位 ${folder}`, opened: folder, kind: "folder" }, state: this.state };
+        }
+        if (typeof plugin.homepage !== "string" || !/^https?:\/\//iu.test(plugin.homepage)) {
+          return { ok: false, error: `${name} 没有可打开的主页（package.json 里没有 homepage / repository）`, state: this.state };
+        }
+        await shell.openExternal(plugin.homepage);
+        return { ok: true, result: { message: `已在浏览器中打开 ${plugin.homepage}`, opened: plugin.homepage, kind: "homepage" }, state: this.state };
+      }
+
       // Documentation links in the 收录插件 panel: only https, only the
       // hosts named in awesome.js's exported constants stay reachable, so a
       // malformed entry cannot turn the button into an arbitrary launcher.
