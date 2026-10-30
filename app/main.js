@@ -187,7 +187,7 @@ async function runUiCheck({ shot }) {
   else {
     if (!pluginsPanel.actions.some((button) => button.action === "enable-all-bundles")) issues.push("插件管理面板缺少「一键启用全部插件」按钮");
     // Every plugin row must offer its own "open" action, and the label has to
-    // agree with the source: 本地 -> folder, 网上安装 -> homepage. A row whose
+    // agree with the source: 本地 -> folder, 联网 -> homepage. A row whose
     // target is unknown renders the button disabled instead of hiding it, so
     // the count below stays meaningful.
     const openers = pluginsPanel.actions.filter((button) => button.action === "open-plugin");

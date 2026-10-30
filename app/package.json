@@ -1,7 +1,7 @@
 {
   "name": "dsh-recovery",
   "productName": "DSH Recovery",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "private": true,
   "description": "Standalone recovery console for DeepSeek Harness profiles (safe mode, plugin management, rollback).",
   "main": "main.js",

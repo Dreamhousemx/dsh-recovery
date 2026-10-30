@@ -712,7 +712,7 @@ function renderPlugins() {
 
   const nodes = [
     panelBar(
-      `已启用 ${enabledCount} / ${bundles.length} 个插件 · 本地 ${localPlugins.length} · 网上 ${registryPlugins.length}` +
+      `已启用 ${enabledCount} / ${bundles.length} 个插件 · 本地 ${localPlugins.length} · 联网 ${registryPlugins.length}` +
         (patchDisabledCount > 0 ? ` · 补丁层禁用 ${patchDisabledCount} 条` : ""),
       [
         button("一键启用全部插件", "enable-all-bundles", undefined, {
@@ -731,7 +731,7 @@ function renderPlugins() {
     ),
     hint(
       "查看当前 Profile 中安装的插件。可以禁用插件（保留安装，启动时不加载），也可以彻底卸载（移入隔离区，可随时还原）。" +
-        "按来源分成两组：本地插件用 `link:` 指向工作副本（「打开」定位到该文件夹），网上安装的插件从 npm 装进 Profile（「打开」打开其主页）。" +
+        "按来源分成三组：本地插件用 `link:` 指向工作副本（「打开」定位到该文件夹）；联网插件从 npm 装进 Profile（「打开」打开其项目主页）；内置组件随应用发布。" +
         (running ? " 目标应用正在运行，改动类操作已暂时禁用。" : ""),
     ),
   ];
@@ -756,7 +756,7 @@ function renderPlugins() {
     const noHome = registryPlugins.filter((plugin) => typeof plugin.homepage !== "string").length;
     nodes.push(
       card({
-        title: "网上安装的插件",
+        title: "联网插件",
         icon: "🌐",
         desc:
           `从 npm 安装进 Profile 的插件：「打开」会在浏览器打开项目主页。${registryPlugins.length} 个` +
@@ -865,7 +865,7 @@ function pluginRow(plugin, running) {
   // backend from the same row data, so this only has to know whether one is
   // available at all.
   const canOpen = local || builtin ? plugin.installedLocal === true || typeof plugin.sourcePath === "string" : typeof plugin.homepage === "string";
-  const sourceChip = local ? chip("本地", "ok") : builtin ? chip("内置", "muted") : chip("网上安装");
+  const sourceChip = local ? chip("本地", "ok") : builtin ? chip("内置", "muted") : chip("联网");
   return row({
     name: plugin.name,
     mono: true,

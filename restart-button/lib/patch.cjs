@@ -29,7 +29,7 @@ const DEFAULT_BACKUP_DIR = path.join(ROOT, "backup");
 const DEFAULT_STATE_FILE = path.join(ROOT, "state.json");
 const ENTRIES = ["lib/main.js", "lib/preload-app.cjs"];
 const DEFAULT_ARCHIVE = "D:\\Dev Tools\\DeepSeek Harness\\resources\\app.asar";
-const TOOL_VERSION = "1.3.0";
+const TOOL_VERSION = "1.3.1";
 
 const none = () => {};
 const short = (hash) => (hash ? `${hash.slice(0, 16)}…` : "(无)");

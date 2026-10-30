@@ -505,7 +505,7 @@ async function verifyPluginManagement(controller, fixture, result) {
   const registryRow = byName(FIXTURE_BUNDLE);
   const coreRow = byName(CORE_BUNDLE);
   result.ok(
-    "插件管理: 按来源分类（本地/网上/内置）",
+    "插件管理: 按来源分类（本地/联网/内置）",
     linkedRow?.source === "local" &&
       registryRow?.source === "registry" &&
       coreRow?.source === "builtin",
@@ -519,7 +519,7 @@ async function verifyPluginManagement(controller, fixture, result) {
     linkedRow?.sourcePath,
   );
   result.ok(
-    "插件管理: 网上插件解析出主页",
+    "插件管理: 联网插件解析出主页",
     typeof registryRow?.homepage === "string" && /^https?:\/\//u.test(registryRow.homepage),
     registryRow?.homepage,
   );

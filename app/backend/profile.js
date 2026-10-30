@@ -180,7 +180,7 @@ function listPlugins(profileDir, manifest) {
       installedLocal: pathExists(installedDir),
       quarantinable: pathExists(installedDir),
       declared: declared !== undefined,
-      // Source classification for the 插件管理 panel: 本地 vs 网上安装.
+      // Source classification for the 插件管理 panel: 本地 / 联网 / 内置.
       source: builtinOrigin(name) ?? origin.source,
       sourcePath: origin.sourcePath,
       linked: origin.linked,
