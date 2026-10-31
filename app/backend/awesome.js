@@ -234,7 +234,12 @@ function gitFacts(dir) {
   if (!isDirectory(path.join(dir, ".git"))) return { available: false };
   const remote = runGit(dir, ["remote", "get-url", "origin"]);
   const branch = runGit(dir, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const first = runGit(dir, ["log", "--reverse", "--format=%aI", "-1"]);
+  // `--reverse -1` reports the LAST commit, not the first: git applies the limit
+  // before reversing, so `--reverse` alone reorders the single row it kept. The
+  // root commit has to be named directly, or the repository looks brand new
+  // after every push. `--max-parents=0` also survives a grafted/shallow clone
+  // where several roots may exist.
+  const first = runGit(dir, ["log", "--max-parents=0", "--reverse", "--format=%aI", "-1"]);
   const last = runGit(dir, ["log", "-1", "--format=%aI"]);
   const origin = parseGitRemote(remote);
   return {
@@ -252,7 +257,65 @@ function gitFacts(dir) {
 // GitHub metadata (optional; a failure is "unknown", never a failed check)
 // ---------------------------------------------------------------------------
 
+/**
+ * GitHub token the machine already has, if any.
+ *
+ * Anonymous requests share one rate-limit bucket per egress IP (60/hour), so a
+ * shared, NATed or already-busy connection answers 403 to *every* lookup. That
+ * used to turn "I cannot read the topics" into a permanent「待确认」 on the
+ * topics, age and maintenance rules — the check looked unable to verify anything
+ * while the real cause was the network it came from.
+ *
+ * Order of preference: the environment (what CI and most tools set), then the
+ * `gh` CLI's stored credential, which is what a desktop user already has after
+ * `gh auth login`. Only a token that exists is used; discovery never prompts and
+ * never fails the check.
+ *
+ * A token is optional throughout: without one the behaviour degrades to the same
+ * "unknown" findings as before, so an offline machine still works.
+ */
+let cachedToken;
+
+function githubToken() {
+  if (cachedToken !== undefined) return cachedToken === null ? undefined : cachedToken;
+
+  for (const name of ["GITHUB_TOKEN", "GH_TOKEN"]) {
+    const value = process.env[name];
+    if (typeof value === "string" && value.trim() !== "") {
+      cachedToken = value.trim();
+      return cachedToken;
+    }
+  }
+
+  // `gh auth token` prints the token and exits non-zero when it is not logged in.
+  // Bounded and quiet: this must never delay a check or write to the console.
+  try {
+    const outcome = spawnSync("gh", ["auth", "token"], {
+      encoding: "utf8",
+      timeout: 5000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const value = outcome.status === 0 ? String(outcome.stdout ?? "").trim() : "";
+    if (value !== "") {
+      cachedToken = value;
+      return cachedToken;
+    }
+  } catch {
+    /* gh missing is the normal case on a machine without it */
+  }
+
+  cachedToken = null;
+  return undefined;
+}
+
+/** True when a token was found; used to word the advice, never to gate a check. */
+function hasGithubToken() {
+  return githubToken() !== undefined;
+}
+
 function fetchJson(url, { timeout = 6000 } = {}) {
+  const token = githubToken();
   return new Promise((resolve) => {
     let request;
     try {
@@ -262,13 +325,27 @@ function fetchJson(url, { timeout = 6000 } = {}) {
           headers: {
             "user-agent": "dsh-recovery",
             accept: "application/vnd.github+json",
+            ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
           },
           timeout,
         },
         (response) => {
           if (response.statusCode !== 200) {
             response.resume();
-            resolve({ ok: false, status: response.statusCode });
+            // 403 is ambiguous on GitHub: it is both "rate limited" and
+            // "forbidden". The remaining-count header tells them apart, and the
+            // difference decides whether retrying later would ever help.
+            const limited = response.headers["x-ratelimit-remaining"] === "0";
+            resolve({
+              ok: false,
+              status: response.statusCode,
+              reason:
+                limited && response.statusCode === 403
+                  ? token === undefined
+                    ? "GitHub API 未认证额度已用尽（每小时 60 次，按出口 IP 计算）"
+                    : "GitHub API 额度已用尽"
+                  : undefined,
+            });
             return;
           }
           let body = "";
@@ -298,7 +375,9 @@ function fetchJson(url, { timeout = 6000 } = {}) {
 async function fetchRepoMeta(owner, repo) {
   if (typeof owner !== "string" || typeof repo !== "string") return { ok: false, status: "unknown-repo" };
   const response = await fetchJson(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
-  if (response.ok !== true) return { ok: false, status: response.status };
+  if (response.ok !== true) {
+    return { ok: false, status: response.status, reason: response.reason };
+  }
   const value = response.value ?? {};
   return {
     ok: true,
@@ -827,7 +906,20 @@ async function check(input = {}) {
     if (topics.includes("dsh-plugin")) findings.push(finding("topic", "ok", "仓库带有 dsh-plugin topic"));
     else findings.push(finding("topic", "fail", `仓库 topic 中没有 dsh-plugin（当前：${topics.join(", ") || "无"}）`, "在 GitHub 仓库页面添加 dsh-plugin topic"));
   } else {
-    findings.push(finding("topic", "warn", "无法读取仓库 topic（未联网或仓库不在 GitHub）", "在 GitHub 仓库页面确认已添加 dsh-plugin topic"));
+    // Say which lookup failed. "未联网" was printed even when the machine was
+    // online and the API had merely refused the request, which sent people to
+    // check their network instead of their token.
+    const why = age.reason ?? "无法读取仓库 topic（未联网或仓库不在 GitHub）";
+    findings.push(
+      finding(
+        "topic",
+        "warn",
+        why,
+        !hasGithubToken()
+          ? "登录一次 gh auth login，或设置 GITHUB_TOKEN / GH_TOKEN 后重试：未认证请求按出口 IP 每小时只有 60 次；也可在 GitHub 仓库页面确认已添加 dsh-plugin topic"
+          : "在 GitHub 仓库页面确认已添加 dsh-plugin topic，然后重试",
+      ),
+    );
   }
 
   // ---- R18 maintained ----------------------------------------------------
@@ -1076,6 +1168,9 @@ async function resolveAge({ git, identity, online }) {
       if (!Number.isNaN(createdAt.getTime())) {
         return { days: (Date.now() - createdAt.getTime()) / 86400000, source: "GitHub API created_at", meta };
       }
+    }
+    if (meta.reason !== undefined) {
+      return { days: undefined, reason: `无法读取仓库信息：${meta.reason}`, meta: undefined };
     }
   }
   if (typeof git.firstCommit === "string" && git.firstCommit !== "") {
