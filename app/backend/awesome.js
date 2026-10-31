@@ -753,6 +753,9 @@ function listEntries(listDir) {
   } catch {
     return { available: false, entries: [] };
   }
+  // Computed once: `git ls-files` is a subprocess, and asking it per entry would
+  // spawn one process for all 7,900+ entries.
+  const tracked = trackedEntryFiles(listDir);
   const entries = names.map((name) => {
     let text = "";
     try {
@@ -763,9 +766,82 @@ function listEntries(listDir) {
       url: firstNonEmptyLine(text.match(/^url:\s*(.*)$/mu)?.[1]?.replace(/^['"]|['"]$/gu, "")),
       name: firstNonEmptyLine(text.match(/^name:\s*(.*)$/mu)?.[1]?.replace(/^['"]|['"]$/gu, "")),
       category: firstNonEmptyLine(text.match(/^category:\s*(.*)$/mu)?.[1]?.replace(/^['"]|['"]$/gu, "")),
+      description: readEntryDescription(text),
+      // Whether `git ls-files` knows this file decides R13: an uncommitted draft
+      // in the working tree is not "an entry that is already in the list".
+      tracked: tracked.has(name),
     };
   });
   return { available: true, entries };
+}
+
+/**
+ * Entry filenames committed in the clone.
+ *
+ * Falls back to "assume tracked" when git is unavailable, which preserves the
+ * previous conservative behaviour rather than silently reporting every draft as
+ * brand new.
+ */
+function trackedEntryFiles(listDir) {
+  const relative = runGit(listDir, ["ls-files", "--", "data/plugins"]);
+  // No git, or not a repository: assume everything present is tracked, which is
+  // the conservative answer (it never claims a merged entry is still a draft).
+  if (relative === undefined) return { has: () => true };
+  return new Set(
+    relative
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "")
+      .map((line) => path.basename(line.replace(/\\/gu, "/"))),
+  );
+}
+
+/** `description.en` / `description.zh` out of an existing entry file. */
+function readEntryDescription(text) {
+  // Capture the block of indented lines under `description:`. `$` is unusable
+  // for its end: under the `m` flag it matches at the end of the *first* line,
+  // which silently truncated the block to `en:` and made `zh:` read as empty.
+  const block = /^description:[ \t]*\r?\n((?:[ \t]+.*(?:\r?\n|$))*)/mu.exec(text)?.[1] ?? "";
+  const pull = (locale) => {
+    const raw = new RegExp(`^\\s+${locale}:\\s*(.*)$`, "mu").exec(block)?.[1];
+    if (raw === undefined) return "";
+    const trimmed = raw.trim();
+    // Undo YAML quoting so a description written as 'a: b' comes back as a: b
+    // instead of being re-quoted on the next write.
+    if (trimmed.length > 1 && trimmed.startsWith("'") && trimmed.endsWith("'")) {
+      return trimmed.slice(1, -1).replace(/''/gu, "'");
+    }
+    if (trimmed.length > 1 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      return trimmed.slice(1, -1).replace(/\\"/gu, '"');
+    }
+    return trimmed;
+  };
+  return { en: pull("en"), zh: pull("zh") };
+}
+
+/**
+ * An entry file already present in the list clone, or `undefined`.
+ *
+ * Reading it is what lets the check describe the submission instead of the form:
+ * a description written to disk on a previous run is a description that exists.
+ */
+function readEntryFile(listDir, fileName) {
+  if (typeof fileName !== "string" || fileName === "") return undefined;
+  const target = path.join(listDir, "data", "plugins", fileName);
+  if (!isFile(target)) return undefined;
+  let text;
+  try {
+    text = fs.readFileSync(target, "utf8");
+  } catch {
+    return undefined;
+  }
+  return {
+    file: fileName,
+    url: firstNonEmptyLine(text.match(/^url:\s*(.*)$/mu)?.[1]?.replace(/^['"]|['"]$/gu, "")),
+    name: firstNonEmptyLine(text.match(/^name:\s*(.*)$/mu)?.[1]?.replace(/^['"]|['"]$/gu, "")),
+    category: firstNonEmptyLine(text.match(/^category:\s*(.*)$/mu)?.[1]?.replace(/^['"]|['"]$/gu, "")),
+    description: readEntryDescription(text),
+  };
 }
 
 function normalizeRepoUrl(url) {
@@ -941,15 +1017,33 @@ async function check(input = {}) {
   // ---- R15 upstream dependencies ----------------------------------------
   upstreamIssues(findings, manifest, identity);
 
+  // ---- R9 naming ---------------------------------------------------------
+  // Resolved before R7 because the description check looks for an entry file
+  // already written into the list clone, and its filename is what naming decides.
+  const naming = resolveNaming({ identity, input, git, subpath: bundleCandidate?.subpath ?? subpathFromDir(dir, identity) });
+  if (naming.fileName === undefined) {
+    findings.push(finding("naming", "fail", naming.problem, "用 owner/repo 或 GitHub 仓库链接，或在配置里补上仓库地址"));
+  } else {
+    findings.push(finding("naming", "ok", `条目文件 ${naming.fileName}，name 为 ${naming.name}`));
+  }
+
   // ---- R7 description ----------------------------------------------------
-  // Only an explicit field is checked for format. When the panel field is
-  // empty the manifest description is offered as a starting point instead of
-  // failing: an untyped field is not a wrong description, and failing here
-  // would report a requirement the user has not been asked for yet.
+  // The panel field is the input; an entry already written into the list clone
+  // is the fallback. Without that fallback the check was circular: an empty
+  // field made `entry` undefined, so the form could never be pre-filled from the
+  // file, so pressing「检查」twice always reported 「还没有填写」 for a description
+  // that was already on disk.
+  const listDirInput = typeof input.listDir === "string" && input.listDir !== "" ? path.resolve(input.listDir) : undefined;
+  const existing =
+    listDirInput === undefined || naming?.fileName === undefined
+      ? undefined
+      : readEntryFile(listDirInput, naming.fileName);
   const typedEn = typeof input.descriptionEn === "string" ? input.descriptionEn.trim() : "";
   const manifestDescription = typeof manifest?.description === "string" ? manifest.description.trim() : "";
-  const en = typedEn;
-  const zh = typeof input.descriptionZh === "string" ? input.descriptionZh.trim() : "";
+  const en = typedEn !== "" ? typedEn : (existing?.description?.en ?? "");
+  const zhInput = typeof input.descriptionZh === "string" ? input.descriptionZh.trim() : "";
+  const zh = zhInput !== "" ? zhInput : (existing?.description?.zh ?? "");
+  const enSource = typedEn !== "" ? "field" : en === "" ? "none" : "entry";
   const enCheck = validateDescription(en, "en");
   if (en === "") {
     if (manifestDescription === "") {
@@ -970,6 +1064,14 @@ async function check(input = {}) {
     }
   } else if (!enCheck.ok) {
     findings.push(finding("description", "fail", enCheck.problems.join("；"), "写一句说明插件做什么的话，以句号结尾，不带营销词"));
+  } else if (enSource === "entry") {
+    findings.push(
+      finding(
+        "description",
+        "ok",
+        `描述格式符合要求（取自克隆里已有的 ${naming.fileName}）`,
+      ),
+    );
   } else {
     findings.push(finding("description", "ok", "描述格式符合要求"));
   }
@@ -1006,14 +1108,6 @@ async function check(input = {}) {
     );
   }
 
-  // ---- R9 naming ---------------------------------------------------------
-  const naming = resolveNaming({ identity, input, git, subpath: bundleCandidate?.subpath ?? subpathFromDir(dir, identity) });
-  if (naming.fileName === undefined) {
-    findings.push(finding("naming", "fail", naming.problem, "用 owner/repo 或 GitHub 仓库链接，或在配置里补上仓库地址"));
-  } else {
-    findings.push(finding("naming", "ok", `条目文件 ${naming.fileName}，name 为 ${naming.name}`));
-  }
-
   // ---- R10 icon / R11 screenshots ---------------------------------------
   const iconCheck = validateIcon(input.icon);
   if (!iconCheck.ok) findings.push(finding("icon", "fail", iconCheck.problems.join("；"), "换成 GitHub 托管的 png/jpg/webp，或不写（回退作者头像）"));
@@ -1035,7 +1129,21 @@ async function check(input = {}) {
     if (clash === undefined) {
       findings.push(finding("duplicate", "ok", `列表里还没有这个仓库（已检查 ${list.entries.length} 条）`));
     } else if (clash.file === naming.fileName) {
-      findings.push(finding("duplicate", "warn", `这个仓库已在列表里（${clash.file}），本次是更新自己的条目`, "更新时只改自己那一条，不要动别人的"));
+      // Distinguish "your own entry is already merged upstream" from "your own
+      // uncommitted draft is sitting in the clone". Both are the same file, but
+      // only the first one means this PR is an update — and saying "already in
+      // the list" about a file the user has not committed or pushed yet reads as
+      // a contradiction, which is exactly how it was reported.
+      findings.push(
+        clash.tracked === true
+          ? finding("duplicate", "ok", `你自己已合并的条目 ${clash.file}，本次是更新它`, "更新时只改自己那一条，不要动别人的")
+          : finding(
+              "duplicate",
+              "ok",
+              `${clash.file} 是你本次新增的条目（克隆里尚未提交），列表里还没有这个仓库`,
+              "提交后它会成为列表里的新条目，不是重复",
+            ),
+      );
     } else {
       findings.push(finding("duplicate", "warn", `已存在指向同一仓库的条目：${clash.file}`, "两个插件做同一件事时先到者保留位置，但更好的一方可以取代；确认是分叉或确实做了新东西"));
     }
@@ -1085,6 +1193,10 @@ async function check(input = {}) {
     git: { remote: git.remote, branch: git.branch, firstCommit: git.firstCommit, lastCommit: git.lastCommit },
     manifest: manifest === undefined ? undefined : { name: manifest.name, version: manifest.version, description: manifest.description },
     entry,
+    // What is already on disk for this plugin. The panel pre-fills its fields
+    // from here so a description that was written on an earlier run is not
+    // demanded again.
+    existingEntry: existing,
     yaml,
     fileName: naming.fileName,
     naming,

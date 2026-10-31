@@ -90,3 +90,67 @@ test("fixesText names the rule and its suggested fix", () => {
   assert.match(text, /commit real code/u);
   assert.doesNotMatch(text, /repo\./u);
 });
+
+// ---------------------------------------------------------------------------
+// Round-tripping an entry that is already in the list clone
+// ---------------------------------------------------------------------------
+
+const { mkdirSync } = require("node:fs");
+
+/** A throwaway clone of the list with one entry file, tracked or not. */
+function makeList({ entry, tracked }) {
+  const dir = mkdtempSync(path.join(tmpdir(), "awesome-list-"));
+  mkdirSync(path.join(dir, "data", "plugins"), { recursive: true });
+  writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "awesome-dsh-plugin" }));
+  execFileSync("git", ["-C", dir, "init", "-q", "-b", "main"], { encoding: "utf8" });
+  if (entry !== undefined) writeFileSync(path.join(dir, "data", "plugins", "owner__repo.yml"), entry);
+  if (tracked === true) {
+    execFileSync("git", ["-C", dir, "add", "-A"], { encoding: "utf8" });
+  }
+  return dir;
+}
+
+const ENTRY = [
+  "url: https://github.com/owner/repo",
+  "name: owner/repo",
+  "category: tools",
+  "description:",
+  "  en: 'Does a thing: with a colon.'",
+  "  zh: 做一件事：带全角冒号。",
+  "",
+].join("\n");
+
+test("a description already written to disk is read back, quotes and all", (t) => {
+  const dir = makeList({ entry: ENTRY, tracked: true });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const entries = awesome.listEntries(dir);
+  const entry = entries.entries.find((row) => row.file === "owner__repo.yml");
+  // The `zh:` line was silently dropped before, because `$` under the `m` flag
+  // ended the capture block at the first indented line.
+  assert.equal(entry.description.zh, "做一件事：带全角冒号。");
+  // Single-quoted YAML doubles internal quotes; the value must come back unquoted.
+  assert.equal(entry.description.en, "Does a thing: with a colon.");
+});
+
+test("an uncommitted draft is not reported as already in the list", async (t) => {
+  const dir = makeList({ entry: ENTRY, tracked: false });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const outcome = await awesome.check({ dir, countInPr: 1, listDir: dir, repo: "owner/repo", online: false });
+  const duplicate = outcome.findings.find((item) => item.rule === "duplicate");
+
+  assert.equal(duplicate.level, "ok", `an uncommitted draft is not a duplicate: ${duplicate.detail}`);
+  assert.match(duplicate.detail, /尚未提交/u);
+});
+
+test("a committed entry of your own is reported as an update", async (t) => {
+  const dir = makeList({ entry: ENTRY, tracked: true });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const outcome = await awesome.check({ dir, countInPr: 1, listDir: dir, repo: "owner/repo", online: false });
+  const duplicate = outcome.findings.find((item) => item.rule === "duplicate");
+
+  assert.equal(duplicate.level, "ok");
+  assert.match(duplicate.detail, /更新/u);
+});

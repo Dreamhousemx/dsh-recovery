@@ -1376,13 +1376,22 @@ function findingRow(item) {
 function renderAwesomeFields(info, check) {
   const entry = check?.entry;
   const categories = info.categories ?? [];
+  // What the list clone already holds for this plugin. It is the first place the
+  // fields look, because a description written on an earlier run still exists —
+  // re-typing it to satisfy the check would be busywork.
+  const existing = check?.existingEntry;
   // The manifest's own description, offered as a starting point when the field
   // is still empty. It is a draft, never applied silently.
   const draft = check?.manifest?.description;
+  const prefilled = existing?.description?.en !== undefined && existing.description.en !== "";
   return card({
     title: "条目字段",
     desc: "只有 description.en 是必填的；分类留空会按仓库内容推断，中文描述留空由维护者补。",
-    tags: draft === undefined ? undefined : [chip("package.json 里有现成描述", "mono")],
+    tags: prefilled
+      ? [chip(`已从 ${existing.file} 回填`, "ok")]
+      : draft === undefined
+        ? undefined
+        : [chip("package.json 里有现成描述", "mono")],
     body: [
       el("div", { class: "field-grid" }, [
         el("label", { class: "field" }, [
@@ -1395,7 +1404,7 @@ function renderAwesomeFields(info, check) {
         ]),
         el("label", { class: "field" }, [
           el("span", { class: "field__label", text: "分类" }),
-          select("awesome-category-input", entry?.category ?? check?.category ?? "", [
+          select("awesome-category-input", entry?.category ?? existing?.category ?? check?.category ?? "", [
             { value: "", label: "（按仓库内容推断）" },
             ...categories.map((category) => ({ value: category, label: category })),
           ]),
@@ -1408,7 +1417,7 @@ function renderAwesomeFields(info, check) {
             id: "awesome-en-input",
             placeholder: "One-line description ending with a period.",
             spellcheck: "false",
-            value: entry?.description?.en ?? "",
+            value: entry?.description?.en ?? existing?.description?.en ?? "",
           }),
         ]),
         el("label", { class: "field" }, [
@@ -1419,7 +1428,7 @@ function renderAwesomeFields(info, check) {
             id: "awesome-zh-input",
             placeholder: "一句话描述，以句号结尾。",
             spellcheck: "false",
-            value: entry?.description?.zh ?? "",
+            value: entry?.description?.zh ?? existing?.description?.zh ?? "",
           }),
         ]),
         el("label", { class: "field" }, [
